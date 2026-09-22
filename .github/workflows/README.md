@@ -1,6 +1,6 @@
 # 自建主控构建与发布
 
-主控代码完整合入上游开发分支 `main@7d692d2`，自建版本 `1.5.2`，
+主控代码完整合入上游开发分支 `main@7d692d2`，自建版本 `1.5.3`，
 接受上游功能删除并保留旧客户端协议兼容。默认分支 `owned`；
 本人仓库 `main` 为相同安全工作流副本，上游历史仅通过 `upstream` 远程参考。
 
@@ -58,3 +58,7 @@ gh workflow run snapshot.yml --repo R1ddle1337/komari --ref owned
 
 SHA-256 校验用于防损坏和产物一致性，不是独立数字签名；本人 GitHub 账号、
 构建权限、npm/Go 依赖、官方工具链及 Alpine 软件源仍属于信任边界。
+
+## 静态资源与升级缓存
+
+1.5.3 为后台资源使用 `/themes/default/dist/assets/` 独立路径；HTML、Service Worker 和不存在的资源禁止 CDN 缓存。带内容哈希的资源可长期缓存。根 Service Worker 由后端维护，只迁移旧 Workbox 预缓存，不拦截请求、不预下载完整前端。前端登录请求有 12 秒超时和重试入口。

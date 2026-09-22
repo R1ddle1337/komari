@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -82,6 +83,29 @@ func stripServiceWorkerRegistration(html string) string {
 	return strings.ReplaceAll(html, `<script id="vite-plugin-pwa:register-sw" src="/registerSW.js"></script>`, "")
 }
 
+var fingerprintedAsset = regexp.MustCompile(`[-.][A-Za-z0-9_-]{8,}\.(js|css|woff2?|ttf|png|webp|svg)$`)
+
+func noStore(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	c.Header("CDN-Cache-Control", "no-store")
+}
+
+func serveAsset(c *gin.Context, name, contentType string, content []byte) {
+	if fingerprintedAsset.MatchString(path.Base(name)) {
+		c.Header("Cache-Control", "public, max-age=31536000, immutable")
+	} else {
+		c.Header("Cache-Control", "no-cache")
+		c.Header("CDN-Cache-Control", "no-store")
+	}
+	if contentType == "" {
+		contentType = "application/octet-stream"
+		if strings.HasSuffix(name, ".webmanifest") {
+			contentType = "application/manifest+json"
+		}
+	}
+	c.Data(http.StatusOK, contentType, content)
+}
+
 // isSafePath 验证路径是否在指定的基础目录内，防止路径穿透攻击
 func isSafePath(basePath, targetPath string) bool {
 	// 获取基础目录的绝对路径
@@ -126,6 +150,15 @@ func StaticRestricted(r *gin.RouterGroup, noRoute func(handlers ...gin.HandlerFu
 }
 
 func static(r *gin.RouterGroup, noRoute func(handlers ...gin.HandlerFunc), forceDefaultTheme bool) {
+	// Keep the old URL available so existing installations can retire their
+	// Workbox caches. The new URL also bypasses previously cached /sw.js bodies.
+	for _, workerPath := range []string{"/sw.js", "/komari-sw.js"} {
+		r.GET(workerPath, func(c *gin.Context) {
+			noStore(c)
+			c.Header("Service-Worker-Allowed", "/")
+			c.Data(http.StatusOK, "text/javascript; charset=utf-8", cacheWorker)
+		})
+	}
 	// 初始化嵌入式文件系统，指向 defaultTheme 根目录。
 	defaultThemeFS, err := fs.Sub(PublicFS, "defaultTheme")
 	if err != nil {
@@ -195,6 +228,7 @@ func static(r *gin.RouterGroup, noRoute func(handlers ...gin.HandlerFunc), force
 
 	// 核心逻辑：渲染 Index.html
 	serveIndex := func(c *gin.Context) {
+		noStore(c)
 		reqPath := c.Request.URL.Path
 		cfg := getConfig()
 
@@ -217,8 +251,17 @@ func static(r *gin.RouterGroup, noRoute func(handlers ...gin.HandlerFunc), force
 		}
 
 		htmlStr := string(content)
-		if forceDefaultTheme {
-			htmlStr = stripServiceWorkerRegistration(htmlStr)
+		htmlStr = stripServiceWorkerRegistration(htmlStr)
+		if currentTheme == DefaultTheme {
+			// Custom themes and the administration frontend share an origin but
+			// must not share the asset namespace or cached same-named files.
+			htmlStr = strings.NewReplacer(
+				`src="/assets/`, `src="/themes/default/dist/assets/`,
+				`href="/assets/`, `href="/themes/default/dist/assets/`,
+			).Replace(htmlStr)
+		}
+		if !forceDefaultTheme {
+			htmlStr = strings.Replace(htmlStr, "<head>", "<head><script>"+string(cacheBootstrap)+"</script>", 1)
 		}
 		if language, err := c.Cookie(LanguageCookieName); err == nil {
 			htmlStr = replaceHTMLLanguage(htmlStr, language)
@@ -244,6 +287,8 @@ func static(r *gin.RouterGroup, noRoute func(handlers ...gin.HandlerFunc), force
 	// ================= 路由定义 =================
 	// 1. Favicon 优先策略
 	r.GET("/favicon.ico", func(c *gin.Context) {
+		c.Header("Cache-Control", "no-cache")
+		c.Header("CDN-Cache-Control", "no-store")
 		// 优先：./data/favicon.ico
 		localFavicon := filepath.Join(DataDir, FaviconFile)
 		if !forceDefaultTheme {
@@ -263,10 +308,11 @@ func static(r *gin.RouterGroup, noRoute func(handlers ...gin.HandlerFunc), force
 		}
 		content, mimeType, exists := getFileContent(currentTheme, themeFaviconPath)
 		if exists {
-			c.Data(http.StatusOK, mimeType, content)
+			serveAsset(c, themeFaviconPath, mimeType, content)
 			return
 		}
 
+		noStore(c)
 		c.Status(http.StatusNotFound)
 	})
 
@@ -275,6 +321,7 @@ func static(r *gin.RouterGroup, noRoute func(handlers ...gin.HandlerFunc), force
 	r.GET("/themes/:id/*path", func(c *gin.Context) {
 		themeID := c.Param("id")
 		if forceDefaultTheme && themeID != DefaultTheme {
+			noStore(c)
 			c.Status(http.StatusNotFound)
 			return
 		}
@@ -286,9 +333,10 @@ func static(r *gin.RouterGroup, noRoute func(handlers ...gin.HandlerFunc), force
 
 		content, mimeType, exists := getFileContent(themeID, filePath)
 		if exists {
-			c.Data(http.StatusOK, mimeType, content)
+			serveAsset(c, filePath, mimeType, content)
 			return
 		}
+		noStore(c)
 		c.Status(http.StatusNotFound)
 	})
 
@@ -346,17 +394,17 @@ func static(r *gin.RouterGroup, noRoute func(handlers ...gin.HandlerFunc), force
 
 		content, mimeType, exists := getFileContent(currentTheme, distPath)
 		if exists {
-			c.Data(http.StatusOK, mimeType, content)
+			serveAsset(c, reqPath, mimeType, content)
 			return
 		}
 
-		// 如果资源不存在，且路径包含扩展名 (如 .js, .css, .png)，则返回 404
-		// 避免将 index.html 作为 js 文件返回导致 "Failed to fetch dynamically imported module"
-		//ext := filepath.Ext(reqPath)
-		//if ext != "" && ext != ".html" {
-		//	c.Status(http.StatusNotFound)
-		//	return
-		//}
+		// Never cache an HTML success response under a missing asset URL.
+		ext := path.Ext(reqPath)
+		if strings.HasPrefix(reqPath, "/assets/") || (ext != "" && ext != ".html") {
+			noStore(c)
+			c.String(http.StatusNotFound, "Asset not found")
+			return
+		}
 
 		// 路由 (如 /dashboard, /settings) -> 返回 index.html
 		serveIndex(c)

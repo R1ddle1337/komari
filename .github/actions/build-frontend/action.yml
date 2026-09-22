@@ -8,7 +8,7 @@ runs:
       uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       with:
         repository: R1ddle1337/komari-web
-        ref: "0eec3fdd5437fc5519d3fb4f944462726845e313"
+        ref: "0d405cdf01225f9f72e9c32f07236ed1d956140c"
         path: .frontend-source
         persist-credentials: false
     - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -24,6 +24,7 @@ runs:
           npm ci --no-audit --no-fund
           timeout --signal=TERM --kill-after=5s 60s npm run test:owned
           timeout --signal=TERM --kill-after=5s 60s npm run test:onboarding
+          timeout --signal=TERM --kill-after=5s 60s npm run test:network
           npm run build
         )
         test -f .frontend-source/dist/index.html

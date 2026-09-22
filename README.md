@@ -1,7 +1,7 @@
 # Komari
 
-This fork is maintained and released by **R1ddle1337**, based on upstream stable
-`1.5.0-fix1`. Backend, frontend and Agent builds use owner-controlled source.
+This fork is maintained and released by **R1ddle1337**, incorporating all changes
+through upstream `main@7d692d2`. Backend, frontend and Agent builds use owner-controlled source.
 The maintained branch is `owned`; see [OWNED.md](OWNED.md).
 
 ![Badge](https://hitscounter.dev/api/hit?url=https%3A%2F%2Fgithub.com%2Fkomari-monitor%2Fkomari&label=&icon=github&color=%23a370f7&message=&style=flat&tz=UTC)

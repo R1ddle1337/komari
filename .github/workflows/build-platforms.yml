@@ -96,7 +96,7 @@ jobs:
           if [ "$GOOS" = windows ]; then
             binary="$binary.exe"
           else
-            flags="$flags -linkmode external -extldflags -static"
+            flags="$flags -linkmode external -extldflags '-static -Wl,--strip-all'"
           fi
           go build -trimpath -ldflags="$flags" -o "$binary"
           sha256sum "$binary" > "$binary.sha256"

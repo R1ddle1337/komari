@@ -8,7 +8,7 @@ runs:
       uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       with:
         repository: R1ddle1337/komari-web
-        ref: "9c66e5b19d80b654369dd8a88b27f88f0f35cbe9"
+        ref: "3c8797fd0bb0ce34fed3b9ba087904e999ea347a"
         path: .frontend-source
         persist-credentials: false
     - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4

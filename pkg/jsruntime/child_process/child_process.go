@@ -262,7 +262,15 @@ func (m *Module) spawnChild(vm *goja.Runtime, command string, arguments []string
 		return child
 	}
 	_ = child.Set("pid", cmd.Process.Pid)
-	resourceID := m.runtime.AddResource(func() { _ = cmd.Process.Kill(); cancel() })
+	closed := make(chan struct{})
+	resourceID := m.runtime.AddResource(func() {
+		close(closed)
+		_ = cmd.Process.Kill()
+		_ = stdin.Close()
+		_ = stdoutReader.Close()
+		_ = stderrReader.Close()
+		cancel()
+	})
 	if resourceID == 0 {
 		_ = stdin.Close()
 		_ = stdoutReader.Close()
@@ -299,9 +307,13 @@ func (m *Module) spawnChild(vm *goja.Runtime, command string, arguments []string
 		return vm.ToValue(false)
 	})
 
-	m.pipeChildOutput(vm, stdoutReader, stdout, options.encoding)
-	m.pipeChildOutput(vm, stderrReader, stderr, options.encoding)
+	stdoutDone := m.pipeChildOutput(vm, stdoutReader, stdout, options.encoding, closed)
+	stderrDone := m.pipeChildOutput(vm, stderrReader, stderr, options.encoding, closed)
 	go func() {
+		// Cmd.Wait 会关闭 StdoutPipe/StderrPipe；必须先读完并完成 JS 流事件投递。
+		// 否则快速退出的子进程可能丢失输出，或在 data/end 之前发出 close。
+		<-stdoutDone
+		<-stderrDone
 		err := cmd.Wait()
 		cancel()
 		m.runtime.RemoveResource(resourceID)
@@ -414,13 +426,15 @@ func childCallback(call goja.FunctionCall) goja.Callable {
 	return nil
 }
 
-func (m *Module) pipeChildOutput(vm *goja.Runtime, reader io.Reader, stream *goja.Object, encoding string) {
+func (m *Module) pipeChildOutput(vm *goja.Runtime, reader io.Reader, stream *goja.Object, encoding string, closed <-chan struct{}) <-chan struct{} {
+	done := make(chan struct{})
 	push, _ := goja.AssertFunction(stream.Get("push"))
 	setEncoding, _ := goja.AssertFunction(stream.Get("setEncoding"))
 	if encoding != "" && setEncoding != nil {
 		_, _ = setEncoding(stream, vm.ToValue(encoding))
 	}
 	go func() {
+		defer close(done)
 		data := make([]byte, 32*1024)
 		for {
 			count, err := reader.Read(data)
@@ -436,19 +450,31 @@ func (m *Module) pipeChildOutput(vm *goja.Runtime, reader io.Reader, stream *goj
 				}) {
 					return
 				}
-				<-delivered
+				select {
+				case <-delivered:
+				case <-closed:
+					return
+				}
 			}
 			if err != nil {
-				m.runtime.RunOnLoop(func(vm *goja.Runtime) {
+				delivered := make(chan struct{})
+				if m.runtime.RunOnLoop(func(vm *goja.Runtime) {
+					defer close(delivered)
 					_ = m.runtime.RunJob(vm, "child_process stream close", func() error {
 						_, pushErr := push(stream, goja.Null())
 						return pushErr
 					})
-				})
+				}) {
+					select {
+					case <-delivered:
+					case <-closed:
+					}
+				}
 				return
 			}
 		}
 	}()
+	return done
 }
 
 func (m *Module) execChild(vm *goja.Runtime, command string, arguments []string, options childCommandOptions, callback goja.Callable) *goja.Object {

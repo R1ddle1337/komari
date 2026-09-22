@@ -706,6 +706,8 @@ func fsMode(value goja.Value, fallback os.FileMode) os.FileMode {
 		if err == nil {
 			return os.FileMode(mode)
 		}
+		// writeFile 的字符串选项也可能是编码；不能把 utf8 等强制转换成权限 000。
+		return fallback
 	}
 	return os.FileMode(value.ToInteger())
 }

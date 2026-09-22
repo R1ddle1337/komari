@@ -653,12 +653,17 @@ func TestChildProcessPermissionAndExecution(t *testing.T) {
 		function verify(command) {
 			const childProcess = require("child_process");
 			const syncOutput = childProcess.execSync(command, { encoding: "utf8" }).trim();
-			return new Promise((resolve) => {
+			return new Promise((resolve, reject) => {
 				const child = childProcess.spawn(command, [], { shell: true, encoding: "utf8" });
 				let output = "";
+				let stderr = "";
 				child.stdout.on("data", (chunk) => output += String(chunk));
-				child.on("close", (code) => resolve(code === 0 && syncOutput === "child" && output.trim() === "child"));
-				child.on("error", () => resolve(false));
+				child.stderr.on("data", (chunk) => stderr += String(chunk));
+				child.on("close", (code) => {
+					if (code === 0 && syncOutput === "child" && output.trim() === "child") resolve(true);
+					else reject(new Error(JSON.stringify({ code, syncOutput, output, stderr })));
+				});
+				child.on("error", reject);
 			});
 		}
 	`, Options{NodeJS: true, AllowExec: true, BaseDir: t.TempDir(), Console: io.Discard, Timeout: 5 * time.Second})

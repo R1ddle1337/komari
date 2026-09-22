@@ -39,6 +39,11 @@ func TestNewClientConnectsToIPv6Loopback(t *testing.T) {
 		t.Skipf("IPv6 loopback is unavailable: %v", err)
 	}
 	defer listener.Close()
+	probe, err := net.DialTimeout("tcp6", listener.Addr().String(), time.Second)
+	if err != nil {
+		t.Skipf("IPv6 loopback connections are unavailable: %v", err)
+	}
+	probe.Close()
 
 	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)

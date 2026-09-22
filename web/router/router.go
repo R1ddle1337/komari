@@ -68,7 +68,14 @@ func registerAgentRoutes(r *gin.Engine) {
 
 	tokenAuthorized := r.Group("/api/clients", api.RequireRole(api.RoleAdmin, api.RoleClient))
 	{
-		// Agent 上报统一使用 v2 JSON-RPC。
+		// 保留既有 v1 节点的鉴权入口；数据仍进入新版统一指标存储。
+		tokenAuthorized.GET("/report", client.WebSocketReport)
+		tokenAuthorized.POST("/report", client.UploadReport)
+		tokenAuthorized.POST("/uploadBasicInfo", client.UploadBasicInfo)
+		tokenAuthorized.POST("/task/result", jsonRpc.Bind("client:taskResult", jsonRpc.WithRaw()))
+		tokenAuthorized.GET("/ping/tasks", jsonRpc.Bind("client:getPingTasks", jsonRpc.WithRaw()))
+		tokenAuthorized.POST("/ping/result", jsonRpc.Bind("client:uploadPingResult", jsonRpc.WithRaw()))
+		// 新版 v2 与文件流接口保持不变。
 		tokenAuthorized.GET("/v2/rpc", client.WebSocketV2RPC)
 		tokenAuthorized.POST("/v2/rpc", client.UploadV2RPC)
 		// File data uses a short-lived, raw HTTP stream opened by a file RPC.

@@ -56,13 +56,12 @@ BACKUP_DIR="$INSTALL_DIR/backup"
 DATA_BACKUP_DIR="$DATA_DIR/data/backup"
 DEFAULT_PORT="25774"
 LISTEN_PORT=""
-STANDARD_REPO="komari-monitor/komari"
-LITE_REPO="nuomiiiii/komari"
+STANDARD_REPO="R1ddle1337/komari"
 REPO="$STANDARD_REPO"
-# 发行版本: standard（标准版）或 lite（Lite 轻量版）
+# 自有仓库仅发布标准版，不引入其他发行者的下载源。
 EDITION="standard"
 EDITION_NAME=""
-# 发布通道: stable（稳定版）或 snapshot（快照版）；Lite 仅支持 stable
+# 发布通道: stable（稳定版）或 snapshot（快照版）
 CHANNEL="stable"
 CHANNEL_NAME=""
 # 语言: en（English）或 zh（简体中文）
@@ -147,29 +146,9 @@ msg() {
             en_text='Please run this script as root.'
             zh_text='请使用 root 权限运行此脚本。'
             ;;
-        edition_title)
-            en_text='Choose an edition'
-            zh_text='选择安装版本'
-            ;;
-        edition_prompt)
-            en_text='Komari has multiple editions with different features and performance profiles. Choose the one that fits your controller.\n\nChoose the edition to install [default 1]:'
-            zh_text='Komari 目前提供多个版本，不同版本在功能和性能上有所差异，请根据主控配置选择。\n\n请选择安装的版本（默认 1）：'
-            ;;
-        edition_standard)
-            en_text='Standard edition'
-            zh_text='标准版本'
-            ;;
-        edition_lite)
-            en_text='Lite edition - optimized for low-resource controllers with a streamlined feature set (maintained by @nuomiiiii)'
-            zh_text='Lite 版本 - 改善低配置主控下的性能，精简复杂功能（由 @nuomiiiii 维护）'
-            ;;
         edition_name_standard)
             en_text='Komari Standard'
             zh_text='Komari 标准版'
-            ;;
-        edition_name_lite)
-            en_text='Komari Lite'
-            zh_text='Komari Lite 轻量版'
             ;;
         selected_edition)
             en_text='Selected edition: %s'
@@ -206,10 +185,6 @@ msg() {
         progress_edition_standard)
             en_text='Standard edition'
             zh_text='标准版'
-            ;;
-        progress_edition_lite)
-            en_text='Lite edition'
-            zh_text='Lite 版本'
             ;;
         progress_download)
             en_text='Download Komari'
@@ -319,9 +294,21 @@ msg() {
             en_text='Latest snapshot: %s'
             zh_text='最新快照版本：%s'
             ;;
-        download_failed)
-            en_text='Download failed. Check your network connection.'
-            zh_text='下载失败，请检查网络连接。'
+        verification_failed)
+            en_text='Download or SHA256 verification failed. The existing binary and service were not changed.'
+            zh_text='下载或 SHA256 校验失败，原二进制和服务保持不变。'
+            ;;
+        replacement_failed)
+            en_text='Failed to replace the binary. The original version has been retained.'
+            zh_text='替换二进制失败，原版本已保留。'
+            ;;
+        rollback_complete)
+            en_text='The upgrade failed. The previous binary was restored and its service restarted. Backup: %s'
+            zh_text='升级失败，已恢复原二进制并重启服务。备份：%s'
+            ;;
+        rollback_failed)
+            en_text='Automatic recovery failed. Keep the binary backup at %s and check the service logs. Database migrations may require restoring a data backup separately.'
+            zh_text='自动恢复失败，请保留二进制备份 %s 并检查服务日志。数据库已迁移时，可能还需要单独恢复数据备份。'
             ;;
         binary_installed)
             en_text='%s binary installed at %s'
@@ -383,49 +370,21 @@ msg() {
             en_text='Stopping Komari service...'
             zh_text='停止 Komari 服务...'
             ;;
-        clearing_backups)
-            en_text='Removing old binary backups...'
-            zh_text='清理旧的二进制备份...'
-            ;;
         backing_up)
             en_text='Backing up the current binary...'
             zh_text='备份当前二进制文件...'
-            ;;
-        backup_failed_log)
-            en_text='Failed to back up the current binary. Restarting the service.'
-            zh_text='备份当前二进制文件失败，正在启动服务。'
             ;;
         backup_failed)
             en_text='The current version could not be backed up. Upgrade cancelled.'
             zh_text='备份当前版本失败，升级已取消。'
             ;;
-        download_url_failed_log)
-            en_text='Failed to get the download URL. Restoring the backup.'
-            zh_text='获取下载链接失败，正在从备份恢复。'
-            ;;
-        download_url_failed_restore)
-            en_text='Failed to get the download URL. The backup was restored.'
-            zh_text='获取下载链接失败，已从备份恢复。'
-            ;;
         downloading_latest)
             en_text='Downloading the latest %s...'
             zh_text='下载最新 %s...'
             ;;
-        download_failed_log)
-            en_text='Download failed. Restoring the backup.'
-            zh_text='下载失败，正在从备份恢复。'
-            ;;
-        download_failed_restore)
-            en_text='Download failed. The backup was restored.'
-            zh_text='下载失败，已从备份恢复。'
-            ;;
         upgrade_success)
             en_text='Version: %s\nChannel: %s'
             zh_text='版本：%s\n通道：%s'
-            ;;
-        upgrade_start_failed)
-            en_text='The service failed to start after the upgrade. Check the logs.'
-            zh_text='服务在升级后未能启动，请检查日志。'
             ;;
         uninstall_start)
             en_text='Uninstalling Komari...'
@@ -784,47 +743,16 @@ ASCII_ART
 
 # 设置发行版本，结果写入全局变量 EDITION / REPO。
 select_edition() {
-    local choice
-    choice=$(ui_menu "$(msg edition_title)" "$(msg edition_prompt)" \
-        "1" "$(msg edition_standard)" \
-        "2" "$(msg edition_lite)")
-
-    case "$choice" in
-        lite|2)
-            EDITION="lite"
-            EDITION_NAME="$(msg edition_name_lite)"
-            REPO="$LITE_REPO"
-            ;;
-        standard|1|"")
-            EDITION="standard"
-            EDITION_NAME="$(msg edition_name_standard)"
-            REPO="$STANDARD_REPO"
-            ;;
-        *)
-            EDITION="standard"
-            EDITION_NAME="$(msg edition_name_standard)"
-            REPO="$STANDARD_REPO"
-            ;;
-    esac
-    if [ "$EDITION" = "lite" ]; then
-        progress_add "$(msg progress_edition_lite)"
-    else
-        progress_add "$(msg progress_edition_standard)"
-    fi
+    EDITION="standard"
+    EDITION_NAME="$(msg edition_name_standard)"
+    REPO="$STANDARD_REPO"
+    progress_add "$(msg progress_edition_standard)"
     log_info "$(msg selected_edition "$EDITION_NAME")"
 }
 
 # 设置发布通道，结果写入全局变量 CHANNEL。
 select_channel() {
     local choice
-
-    if [ "$EDITION" = "lite" ]; then
-        CHANNEL="stable"
-        CHANNEL_NAME="$(msg channel_name_stable)"
-        progress_add "$CHANNEL_NAME"
-        log_info "$(msg selected_channel "$CHANNEL_NAME")"
-        return 0
-    fi
 
     choice=$(ui_menu "$(msg channel_title)" "$(msg channel_prompt)" \
         "1" "$(msg channel_stable)" \
@@ -930,27 +858,84 @@ install_dependencies() {
 get_download_url() {
     local arch=$1
     local file_name="komari-linux-${arch}"
-
-    # Lite 仓库没有 snapshot 发布，始终使用正式版下载地址。
-    if [ "$EDITION" = "lite" ]; then
-        CHANNEL="stable"
-    fi
+    local release_json release_tag api_url
+    [ "$REPO" = "$STANDARD_REPO" ] || return 1
+    case "$arch" in amd64|arm64|386|riscv64|loong64) ;; *) return 1 ;; esac
 
     if [ "$CHANNEL" = "snapshot" ]; then
-        # 获取最新的 snapshot 预发布版本
         log_info "$(msg fetch_snapshot)" >&2
-        local latest_snapshot=$(curl -s "https://api.github.com/repos/${REPO}/releases" | grep '"tag_name"' | grep 'Snapshot-' | head -1 | sed -e 's/.*"tag_name": *"//' -e 's/".*//')
-
-        if [ -z "$latest_snapshot" ]; then
+        api_url="https://api.github.com/repos/${REPO}/releases?per_page=100"
+    else
+        api_url="https://api.github.com/repos/${REPO}/releases/latest"
+    fi
+    release_json=$(curl -fsSL --proto '=https' --proto-redir '=https' \
+        --connect-timeout 15 --max-time 60 -H 'Accept: application/vnd.github+json' "$api_url") || return 1
+    if [ "$CHANNEL" = "snapshot" ]; then
+        release_tag=$(printf '%s\n' "$release_json" | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' |
+            sed 's/.*:[[:space:]]*"\([^"]*\)"/\1/' | awk '/^Snapshot-/ { print; exit }')
+        if [ -z "$release_tag" ]; then
             log_error "$(msg snapshot_not_found)" >&2
             return 1
         fi
-
-        log_info "$(msg snapshot_found "$latest_snapshot")" >&2
-        echo "https://github.com/${REPO}/releases/download/${latest_snapshot}/${file_name}"
+        log_info "$(msg snapshot_found "$release_tag")" >&2
     else
-        # 稳定版：使用 latest
-        echo "https://github.com/${REPO}/releases/latest/download/${file_name}"
+        release_tag=$(printf '%s\n' "$release_json" | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' |
+            head -n 1 | sed 's/.*:[[:space:]]*"\([^"]*\)"/\1/')
+    fi
+    [[ "$release_tag" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]] || return 1
+    # latest 先解析为固定 tag，二进制与校验文件始终来自同一发行版本。
+    printf 'https://github.com/%s/releases/download/%s/%s\n' "$REPO" "$release_tag" "$file_name"
+}
+
+verify_asset_checksum() {
+    local binary=$1 checksum=$2 asset_name=$3 expected actual
+    expected=$(LC_ALL=C awk -v name="$asset_name" '
+        { sub(/\r$/, "") }
+        NF == 2 && length($1) == 64 && $1 ~ /^[[:xdigit:]]+$/ && ($2 == name || $2 == "*" name) {
+            count++; hash = tolower($1); next
+        }
+        { invalid = 1 }
+        END { if (count != 1 || invalid) exit 1; print hash }
+    ' "$checksum") || return 1
+    if command -v sha256sum >/dev/null 2>&1; then
+        actual=$(sha256sum "$binary") || return 1
+    elif command -v shasum >/dev/null 2>&1; then
+        actual=$(shasum -a 256 "$binary") || return 1
+    elif command -v sha256 >/dev/null 2>&1; then
+        actual=$(sha256 -q "$binary") || return 1
+    elif command -v openssl >/dev/null 2>&1; then
+        actual=$(openssl dgst -sha256 "$binary") || return 1
+        actual=${actual##* }
+    else
+        return 1
+    fi
+    actual=${actual%% *}
+    actual=$(printf '%s' "$actual" | tr 'A-F' 'a-f')
+    [ "$actual" = "$expected" ]
+}
+
+download_verified_binary() {
+    local url=$1 target=$2 label=$3
+    download_file "$url" "$target" "$label" || return 1
+    [ -s "$target" ] || return 1
+    curl -fsSL --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 60 \
+        -o "$target.sha256" "$url.sha256" || return 1
+    verify_asset_checksum "$target" "$target.sha256" "${url##*/}" || return 1
+    chmod 755 "$target"
+}
+
+cleanup_stage() {
+    # 仅删除本次创建目录中的两个固定文件，不递归删除安装目录。
+    rm -f -- "$1/komari" "$1/komari.sha256"
+    rmdir -- "$1" 2>/dev/null || true
+}
+
+restore_binary_backup() {
+    local backup=$1 staged
+    staged=$(mktemp "${BINARY_PATH}.restore.XXXXXX") || return 1
+    if ! cp -p -- "$backup" "$staged" || ! mv -f -- "$staged" "$BINARY_PATH"; then
+        rm -f -- "$staged"
+        return 1
     fi
 }
 
@@ -981,7 +966,7 @@ format_bytes() {
 # the server did not provide a usable total size.
 get_remote_size() {
     local url="$1"
-    curl -fsSLI --max-time 30 "$url" 2>/dev/null | awk '
+    curl -fsSLI --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 30 "$url" 2>/dev/null | awk '
         BEGIN { IGNORECASE = 1 }
         /^content-length:/ {
             value = $2
@@ -1071,7 +1056,7 @@ download_file() {
     fi
 
     : > "$target" || return 1
-    curl -fsSL -o "$target" "$url" &
+    curl -fsSL --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 300 -o "$target" "$url" &
     local download_pid=$!
     local downloaded_bytes=0
 
@@ -1129,17 +1114,18 @@ install_binary() {
 
     install_dependencies
 
-    local arch=$(detect_arch)
+    local arch
+    arch=$(detect_arch) || return 1
     log_info "$(msg detected_arch "$arch")"
 
     log_step "$(msg create_install_dir "$INSTALL_DIR")"
-    mkdir -p "$INSTALL_DIR"
+    mkdir -p "$INSTALL_DIR" || return 1
 
     log_step "$(msg create_data_dir "$DATA_DIR")"
-    mkdir -p "$DATA_DIR"
+    mkdir -p "$DATA_DIR" || return 1
 
-    local download_url=$(get_download_url "$arch")
-    if [ $? -ne 0 ]; then
+    local download_url stage_dir
+    if ! download_url=$(get_download_url "$arch"); then
         ui_msgbox "$(msg title_error)" "$(msg download_url_failed)"
         return 1
     fi
@@ -1148,12 +1134,18 @@ install_binary() {
     log_step "$(msg download_binary "$EDITION_NAME")"
     log_info "$(msg download_url "$download_url")"
 
-    if ! download_file "$download_url" "$BINARY_PATH" "$EDITION_NAME"; then
-        ui_msgbox "$(msg title_error)" "$(msg download_failed)"
+    stage_dir=$(mktemp -d "$INSTALL_DIR/.komari-install.XXXXXX") || return 1
+    if ! download_verified_binary "$download_url" "$stage_dir/komari" "$EDITION_NAME"; then
+        cleanup_stage "$stage_dir"
+        ui_msgbox "$(msg title_error)" "$(msg verification_failed)"
         return 1
     fi
-
-    chmod +x "$BINARY_PATH"
+    if ! mv -f -- "$stage_dir/komari" "$BINARY_PATH"; then
+        cleanup_stage "$stage_dir"
+        ui_msgbox "$(msg title_error)" "$(msg replacement_failed)"
+        return 1
+    fi
+    cleanup_stage "$stage_dir"
     log_success "$(msg binary_installed "$EDITION_NAME" "$BINARY_PATH")"
 
     if ! check_systemd; then
@@ -1263,53 +1255,62 @@ upgrade_komari() {
     select_edition
     select_channel
 
-    log_step "$(msg stopping_service)"
-    systemctl stop ${SERVICE_NAME}.service
+    local arch download_url stage_dir backup_path
+    arch=$(detect_arch) || return 1
+    if ! download_url=$(get_download_url "$arch"); then
+        ui_msgbox "$(msg title_error)" "$(msg download_url_failed)"
+        return 1
+    fi
+    stage_dir=$(mktemp -d "$INSTALL_DIR/.komari-install.XXXXXX") || return 1
+    progress_add "$(msg progress_download)"
+    log_step "$(msg downloading_latest "$EDITION_NAME")"
+    if ! download_verified_binary "$download_url" "$stage_dir/komari" "$EDITION_NAME"; then
+        cleanup_stage "$stage_dir"
+        ui_msgbox "$(msg title_error)" "$(msg verification_failed)"
+        return 1
+    fi
 
-    log_step "$(msg clearing_backups)"
-    rm -f -- "${BINARY_PATH}.backup."*
-
-    local backup_path="${BINARY_PATH}.backup.$(date +%Y%m%d_%H%M%S)"
+    backup_path=$(mktemp "${BINARY_PATH}.backup.$(date +%Y%m%d_%H%M%S).XXXXXX") || {
+        cleanup_stage "$stage_dir"
+        return 1
+    }
     progress_add "$(msg progress_backup)"
     log_step "$(msg backing_up)"
-    if ! cp "$BINARY_PATH" "$backup_path"; then
-        log_error "$(msg backup_failed_log)"
-        systemctl start ${SERVICE_NAME}.service
+    if ! cp -p -- "$BINARY_PATH" "$backup_path"; then
+        cleanup_stage "$stage_dir"
+        rm -f -- "$backup_path"
         ui_msgbox "$(msg title_error)" "$(msg backup_failed)"
         return 1
     fi
 
-    local arch=$(detect_arch)
-    local download_url=$(get_download_url "$arch")
-    if [ $? -ne 0 ]; then
-        log_error "$(msg download_url_failed_log)"
-        mv "$backup_path" "$BINARY_PATH"
-        systemctl start ${SERVICE_NAME}.service
-        ui_msgbox "$(msg title_error)" "$(msg download_url_failed_restore)"
+    # 下载、校验、备份全部成功后才允许停服。
+    log_step "$(msg stopping_service)"
+    if ! systemctl stop "${SERVICE_NAME}.service"; then
+        cleanup_stage "$stage_dir"
+        ui_msgbox "$(msg title_error)" "$(msg replacement_failed)"
         return 1
     fi
-
-    progress_add "$(msg progress_download)"
-    log_step "$(msg downloading_latest "$EDITION_NAME")"
-    if ! download_file "$download_url" "$BINARY_PATH" "$EDITION_NAME"; then
-        log_error "$(msg download_failed_log)"
-        mv "$backup_path" "$BINARY_PATH"
-        systemctl start ${SERVICE_NAME}.service
-        ui_msgbox "$(msg title_error)" "$(msg download_failed_restore)"
+    if ! mv -f -- "$stage_dir/komari" "$BINARY_PATH"; then
+        cleanup_stage "$stage_dir"
+        systemctl start "${SERVICE_NAME}.service"
+        ui_msgbox "$(msg title_error)" "$(msg replacement_failed)"
         return 1
     fi
-
-    chmod +x "$BINARY_PATH"
+    cleanup_stage "$stage_dir"
 
     progress_add "$(msg progress_restart)"
     log_step "$(msg restart_start)"
-    systemctl start ${SERVICE_NAME}.service
-
-    if systemctl is-active --quiet ${SERVICE_NAME}.service; then
+    if systemctl start "${SERVICE_NAME}.service" && sleep 2 && systemctl is-active --quiet "${SERVICE_NAME}.service"; then
         progress_add "$(msg progress_complete)"
         ui_msgbox "$(msg title_upgrade_complete)" "$(msg upgrade_success "$EDITION_NAME" "$CHANNEL_NAME")"
     else
-        ui_msgbox "$(msg title_error)" "$(msg upgrade_start_failed)"
+        if systemctl stop "${SERVICE_NAME}.service" && restore_binary_backup "$backup_path" &&
+            systemctl start "${SERVICE_NAME}.service" && sleep 2 && systemctl is-active --quiet "${SERVICE_NAME}.service"; then
+            ui_msgbox "$(msg title_error)" "$(msg rollback_complete "$backup_path")"
+        else
+            ui_msgbox "$(msg title_error)" "$(msg rollback_failed "$backup_path")"
+        fi
+        return 1
     fi
 }
 
@@ -1458,7 +1459,9 @@ main_menu() {
 }
 
 # Main execution
-check_root
-init_colors
-select_language
-main_menu
+if [[ "${BASH_SOURCE[0]:-$0}" == "$0" ]]; then
+    check_root
+    init_colors
+    select_language
+    main_menu
+fi

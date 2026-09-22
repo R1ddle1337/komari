@@ -161,11 +161,9 @@ func WebSocketV2RPC(c *gin.Context) {
 		conn.WriteJSON(v2.Error(nil, -32001, "invalid token", nil))
 		return
 	}
-	if oldConn, exists := agent_runtime.GetConnectedClients()[uuid]; exists {
+	if oldConn, _ := agent_runtime.RegisterConnectedClient(uuid, conn, 2); oldConn != nil {
 		go oldConn.Close()
 	}
-	agent_runtime.SetConnectedClients(uuid, conn)
-	agent_runtime.MarkV2Client(uuid)
 	go notifierOnline(uuid, conn.ID)
 	defer func() {
 		agent_runtime.DeleteClientConditionally(uuid, conn)

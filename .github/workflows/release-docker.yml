@@ -1,120 +1,85 @@
-name: Publish Docker Image Manually
+name: Publish Owned Server Docker Image
 
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
       version:
-        description: Docker image tag and embedded version.
+        required: true
+        type: string
+      channel:
         required: true
         type: string
 
 permissions:
   contents: read
-  packages: write
-
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  build-frontend:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Build frontend artifact
-        uses: ./.github/actions/build-frontend
-        with:
-          artifact-name: komari-frontend
-
-  build-docker-binaries:
-    needs: build-frontend
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Restore frontend artifact
-        uses: ./.github/actions/restore-frontend
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.23"
-
-      - name: Install Zig
-        uses: ./.github/actions/setup-zig
-
-      - name: Build static binaries for multi-arch
-        env:
-          GOOS: linux
-          CGO_ENABLED: 1
-          GIN_MODE: release
-          VERSION: ${{ github.event.inputs.version }}
-        run: |
-          VERSION_HASH="${{ github.sha }}"
-          LDFLAGS="-s -w -X github.com/komari-monitor/komari/utils.CurrentVersion=${VERSION} -X github.com/komari-monitor/komari/utils.VersionHash=${VERSION_HASH}"
-
-          echo "Building for linux/amd64..."
-          GOARCH=amd64 CC="zig cc -target x86_64-linux-musl" go build -trimpath -ldflags="$LDFLAGS" -o komari-linux-amd64
-
-          echo "Building for linux/arm64..."
-          GOARCH=arm64 CC="zig cc -target aarch64-linux-musl" go build -trimpath -ldflags="$LDFLAGS" -o komari-linux-arm64
-
-      - name: Upload Docker binaries
-        uses: actions/upload-artifact@v4
-        with:
-          name: komari-docker-binaries
-          path: komari-linux-*
-
-  build-and-push-multi-arch:
-    needs: build-docker-binaries
-    runs-on: ubuntu-latest
+  publish:
+    if: github.repository == 'R1ddle1337/komari' && github.ref == 'refs/heads/owned'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     permissions:
       contents: read
       packages: write
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Download Docker binaries
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          name: komari-docker-binaries
-          path: .
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to the Container registry
-        uses: docker/login-action@v3
+          persist-credentials: false
+      - name: Verify source commit and image tags
+        id: image
+        env:
+          VERSION: ${{ inputs.version }}
+          CHANNEL: ${{ inputs.channel }}
+        run: |
+          set -euo pipefail
+          owned_sha="$(git ls-remote origin refs/heads/owned | cut -f1)"
+          test "$owned_sha" = "$GITHUB_SHA"
+          case "$CHANNEL" in
+            stable)
+              [[ "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+              moving_tag=latest
+              ;;
+            snapshot)
+              [[ "$VERSION" =~ ^Snapshot-[0-9]{12}-[0-9]+-[0-9]+$ ]]
+              moving_tag=snapshot
+              ;;
+            *) exit 1 ;;
+          esac
+          git fetch --no-tags --depth=1 origin "refs/tags/$VERSION"
+          test "$(git rev-parse 'FETCH_HEAD^{commit}')" = "$GITHUB_SHA"
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          echo "tags=$image:$VERSION,$image:$moving_tag" >> "$GITHUB_OUTPUT"
+      - name: Use the tested release binaries
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          registry: ${{ env.REGISTRY }}
+          pattern: release-komari-linux-*
+          merge-multiple: true
+      - name: Check image binaries
+        run: |
+          set -euo pipefail
+          sha256sum --strict --check komari-linux-amd64.sha256 komari-linux-arm64.sha256
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+        with:
+          image: tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+          platforms: arm64
+          cache-image: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        with:
+          version: v0.37.1
+          driver-opts: image=moby/buildkit@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=${{ github.event.inputs.version }}
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           push: true
           platforms: linux/amd64,linux/arm64
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          no-cache: true
-          provenance: false
+          tags: ${{ steps.image.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/R1ddle1337/komari
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ inputs.version }}
+          provenance: true

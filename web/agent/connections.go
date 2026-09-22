@@ -9,18 +9,22 @@ import (
 	"github.com/komari-monitor/komari/web/connection"
 )
 
+type clientPresence struct {
+	id              int64
+	expire          time.Time
+	protocolVersion int
+}
+
 var (
-	connectedClients = make(map[string]*connection.SafeConn)
-	v2Clients        = make(map[string]struct{})
-	latestReport     = make(map[string]*v2.Report)
-	recentReports    = make(map[string][]v2.Report)
+	connectedClients    = make(map[string]*connection.SafeConn)
+	connectionProtocols = make(map[string]int)
+	v2Clients           = make(map[string]struct{})
+	latestReport        = make(map[string]*v2.Report)
+	recentReports       = make(map[string][]v2.Report)
 	// presenceOnly stores online state for non-WebSocket agents.
 	// value keeps connectionID and a soft expiration to avoid flicker
-	presenceOnly = make(map[string]struct {
-		id     int64
-		expire time.Time
-	})
-	mu = sync.RWMutex{}
+	presenceOnly = make(map[string]clientPresence)
+	mu           = sync.RWMutex{}
 )
 
 const recentReportRetention = time.Minute
@@ -39,6 +43,14 @@ func SetConnectedClients(uuid string, conn *connection.SafeConn) {
 	mu.Lock()
 	defer mu.Unlock()
 	connectedClients[uuid] = conn
+	connectionProtocols[uuid] = 2
+}
+
+// GetConnectedClient 同步读取连接与其协议，防止重连期间把新格式发给旧连接。
+func GetConnectedClient(uuid string) (*connection.SafeConn, int) {
+	mu.RLock()
+	defer mu.RUnlock()
+	return connectedClients[uuid], connectionProtocols[uuid]
 }
 
 func MarkV2Client(uuid string) {
@@ -50,6 +62,9 @@ func MarkV2Client(uuid string) {
 func IsV2Client(uuid string) bool {
 	mu.RLock()
 	defer mu.RUnlock()
+	if connectedClients[uuid] != nil {
+		return connectionProtocols[uuid] >= 2
+	}
 	_, ok := v2Clients[uuid]
 	return ok
 }
@@ -61,7 +76,12 @@ func DeleteClientConditionally(uuid string, connToRemove *connection.SafeConn) {
 	// 检查当前 map 里的 conn 是否就是要删除的这一个
 	if currentConn, exists := connectedClients[uuid]; exists && currentConn == connToRemove {
 		delete(connectedClients, uuid)
-		delete(v2Clients, uuid)
+		delete(connectionProtocols, uuid)
+		if presence := presenceOnly[uuid]; presence.protocolVersion >= 2 && presence.expire.After(time.Now()) {
+			v2Clients[uuid] = struct{}{}
+		} else {
+			delete(v2Clients, uuid)
+		}
 	}
 }
 func DeleteConnectedClients(uuid string) {
@@ -69,6 +89,7 @@ func DeleteConnectedClients(uuid string) {
 	defer mu.Unlock()
 	// 只从 map 中删除，不再负责关闭连接
 	delete(connectedClients, uuid)
+	delete(connectionProtocols, uuid)
 	delete(v2Clients, uuid)
 }
 
@@ -78,10 +99,7 @@ func DeleteConnectedClients(uuid string) {
 func KeepAlivePresence(uuid string, connectionID int64, ttl time.Duration) {
 	mu.Lock()
 	defer mu.Unlock()
-	presenceOnly[uuid] = struct {
-		id     int64
-		expire time.Time
-	}{id: connectionID, expire: time.Now().Add(ttl)}
+	presenceOnly[uuid] = clientPresence{id: connectionID, expire: time.Now().Add(ttl), protocolVersion: 2}
 }
 
 var defaultPresenceTTL = 20 * time.Second
@@ -91,10 +109,7 @@ func SetPresence(uuid string, connectionID int64, present bool) {
 	mu.Lock()
 	defer mu.Unlock()
 	if present {
-		presenceOnly[uuid] = struct {
-			id     int64
-			expire time.Time
-		}{id: connectionID, expire: time.Now().Add(defaultPresenceTTL)}
+		presenceOnly[uuid] = clientPresence{id: connectionID, expire: time.Now().Add(defaultPresenceTTL), protocolVersion: 2}
 		return
 	}
 	if cur, ok := presenceOnly[uuid]; ok && cur.id == connectionID {
@@ -139,6 +154,12 @@ func GetLatestReport() map[string]*v2.Report {
 // RecordReport updates the latest runtime state and keeps only the short raw
 // window used by recent-status compatibility endpoints.
 func RecordReport(report v2.Report) {
+	mu.Lock()
+	defer mu.Unlock()
+	recordReportLocked(report)
+}
+
+func recordReportLocked(report v2.Report) {
 	if report.UUID == "" {
 		return
 	}
@@ -147,8 +168,6 @@ func RecordReport(report v2.Report) {
 	} else {
 		report.UpdatedAt = report.UpdatedAt.UTC()
 	}
-	mu.Lock()
-	defer mu.Unlock()
 	if latest := latestReport[report.UUID]; latest == nil || !report.UpdatedAt.Before(latest.UpdatedAt) {
 		item := report
 		latestReport[report.UUID] = &item

@@ -1,5 +1,9 @@
 # Komari
 
+本仓库由 **R1ddle1337** 自行管理发布，基于上游最新稳定版 `1.5.0-fix1`。
+后端、前端与 Agent 均从自有源码仓库构建，不自动跟随上游发布。
+维护分支为 `owned`，部署与信任边界见 [OWNED.md](OWNED.md)。
+
 ![Badge](https://hitscounter.dev/api/hit?url=https%3A%2F%2Fgithub.com%2Fkomari-monitor%2Fkomari&label=&icon=github&color=%23a370f7&message=&style=flat&tz=UTC)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/komari-monitor/komari)
 

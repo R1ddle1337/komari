@@ -1,0 +1,108 @@
+name: Test and Build Owned Server Platforms
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    if: github.repository == 'R1ddle1337/komari'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/build-frontend
+
+  test:
+    needs: frontend
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GOTOOLCHAIN: local
+      GOFLAGS: -mod=readonly
+      CGO_ENABLED: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/restore-frontend
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.26.8"
+          cache: false
+      - name: Verify dependencies and precompile tests
+        run: |
+          go mod download
+          go mod verify
+          go test -exec /bin/true -run '^$' ./...
+      - name: Run tests with a 60-second execution deadline
+        run: timeout --signal=TERM --kill-after=5s 60s go test -count=1 -timeout 60s ./...
+      - name: Verify installer failure and rollback behavior
+        run: timeout --signal=TERM --kill-after=5s 60s bash scripts/test-server-installer.sh
+
+  build:
+    needs: [frontend, test]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {goos: windows, goarch: amd64, target: x86_64-windows-gnu}
+          - {goos: windows, goarch: arm64, target: aarch64-windows-gnu}
+          - {goos: windows, goarch: "386", target: x86-windows-gnu}
+          - {goos: linux, goarch: amd64, target: x86_64-linux-musl}
+          - {goos: linux, goarch: arm64, target: aarch64-linux-musl}
+          - {goos: linux, goarch: "386", target: x86-linux-musl}
+          - {goos: linux, goarch: riscv64, target: riscv64-linux-musl}
+          - {goos: linux, goarch: loong64, target: loongarch64-linux-musl}
+    env:
+      GOTOOLCHAIN: local
+      GOFLAGS: -mod=readonly
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/restore-frontend
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.26.8"
+          cache: false
+      - uses: ./.github/actions/setup-zig
+      - name: Build and checksum release binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ inputs.version }}
+          CGO_ENABLED: "1"
+          GIN_MODE: release
+        run: |
+          set -euo pipefail
+          [[ "$VERSION" =~ ^[A-Za-z0-9.+-]+$ ]]
+          go mod download
+          go mod verify
+          export CC="zig cc -target $TARGET"
+          binary="komari-${GOOS}-${GOARCH}"
+          flags="-s -w -X github.com/komari-monitor/komari/utils.CurrentVersion=$VERSION -X github.com/komari-monitor/komari/utils.VersionHash=$GITHUB_SHA"
+          if [ "$GOOS" = windows ]; then
+            binary="$binary.exe"
+          else
+            flags="$flags -linkmode external -extldflags -static"
+          fi
+          go build -trimpath -ldflags="$flags" -o "$binary"
+          sha256sum "$binary" > "$binary.sha256"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-komari-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: komari-*
+          if-no-files-found: error
+          retention-days: 14

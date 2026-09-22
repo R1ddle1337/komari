@@ -1,0 +1,120 @@
+name: Build and Publish Owned Server Release
+
+on:
+  workflow_call:
+    inputs:
+      channel:
+        required: true
+        type: string
+      version:
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    if: github.repository == 'R1ddle1337/komari' && github.ref == 'refs/heads/owned'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Validate reviewed source and release version
+        id: version
+        env:
+          CHANNEL: ${{ inputs.channel }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          owned_sha="$(git ls-remote origin refs/heads/owned | cut -f1)"
+          test "$owned_sha" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          case "$CHANNEL" in
+            stable)
+              if ! [[ "$INPUT_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+                echo "Stable version must be an unambiguous SemVer tag." >&2
+                exit 1
+              fi
+              version="$INPUT_VERSION"
+              ;;
+            snapshot)
+              version="Snapshot-$(date -u +%y%m%d%H%M%S)-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+              ;;
+            *) echo "Unsupported release channel." >&2; exit 1 ;;
+          esac
+          if [ -n "$(git ls-remote origin "refs/tags/$version")" ]; then
+            echo "Existing tags are immutable; select a new version." >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    uses: ./.github/workflows/build-platforms.yml
+    with:
+      version: ${{ needs.prepare.outputs.version }}
+
+  publish:
+    needs: [prepare, build]
+    if: github.repository == 'R1ddle1337/komari' && github.ref == 'refs/heads/owned'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: release-komari-*
+          path: artifacts
+          merge-multiple: true
+      - name: Verify complete artifacts and publish atomically
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          CHANNEL: ${{ inputs.channel }}
+        run: |
+          set -euo pipefail
+          owned_sha="$(git ls-remote origin refs/heads/owned | cut -f1)"
+          test "$owned_sha" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          if [ -n "$(git ls-remote origin "refs/tags/$VERSION")" ]; then
+            echo "Refusing to overwrite an existing tag." >&2
+            exit 1
+          fi
+          (
+            cd artifacts
+            binaries=(komari-*)
+            test "${#binaries[@]}" -eq 16
+            checksums=(*.sha256)
+            test "${#checksums[@]}" -eq 8
+            sha256sum --strict --check -- *.sha256
+          )
+          prerelease=false
+          latest=true
+          if [ "$CHANNEL" = snapshot ]; then prerelease=true; latest=false; fi
+          gh release create "$VERSION" artifacts/komari-* \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --draft --prerelease="$prerelease" --latest=false \
+            --title "$VERSION" \
+            --notes "Owned build from commit $GITHUB_SHA. Build: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID. SHA-256 checksums accompany every binary."
+          gh release edit "$VERSION" --repo "$GITHUB_REPOSITORY" \
+            --draft=false --prerelease="$prerelease" --latest="$latest"
+
+  docker:
+    needs: [prepare, build, publish]
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/release-docker.yml
+    with:
+      version: ${{ needs.prepare.outputs.version }}
+      channel: ${{ inputs.channel }}

@@ -42,20 +42,26 @@ type pprofTarget struct {
 // pprofPreviewBuffer keeps automatic browser previews bounded. Binary profile
 // downloads remain available for profiles that exceed this compact view.
 type pprofPreviewBuffer struct {
-	bytes.Buffer
-	limit int
+	data      bytes.Buffer
+	limit     int
+	truncated bool
 }
 
 func (buffer *pprofPreviewBuffer) Write(data []byte) (int, error) {
-	remaining := buffer.limit - buffer.Len()
+	remaining := buffer.limit - buffer.data.Len()
 	if remaining <= 0 {
+		if len(data) == 0 {
+			return 0, nil
+		}
+		buffer.truncated = true
 		return 0, errPprofPreviewTooLarge
 	}
 	if len(data) > remaining {
-		_, _ = buffer.Buffer.Write(data[:remaining])
+		buffer.truncated = true
+		_, _ = buffer.data.Write(data[:remaining])
 		return remaining, errPprofPreviewTooLarge
 	}
-	return buffer.Buffer.Write(data)
+	return buffer.data.Write(data)
 }
 
 type pprofProfileInfo struct {
@@ -208,13 +214,29 @@ func downloadPprofTarget(c *gin.Context, target pprofTarget) {
 }
 
 func previewPprofTarget(c *gin.Context, target pprofTarget) {
+	writePprofPreview(c, target, collectPprof)
+}
+
+func writePprofPreview(c *gin.Context, target pprofTarget, collect func(context.Context, pprofTarget, io.Writer, int) error) {
 	buffer := &pprofPreviewBuffer{limit: maxPprofPreviewBytes}
-	if err := collectPprof(c.Request.Context(), target, buffer, 1); err != nil {
+	if err := collect(c.Request.Context(), target, buffer, 1); err != nil && !errors.Is(err, errPprofPreviewTooLarge) {
 		respondPprofCollectionError(c, err)
 		return
 	}
 	preparePprofResponse(c, pprofFilename(target), 1)
-	c.Data(http.StatusOK, "text/plain; charset=utf-8", buffer.Bytes())
+	preview := buffer.data.Bytes()
+	// Some runtime profiles ignore errors from their tabwriter. Track overflow
+	// in the writer itself so these previews are also explicitly marked.
+	c.Header("X-Pprof-Preview-Truncated", strconv.FormatBool(buffer.truncated))
+	if buffer.truncated {
+		marker := []byte("\n[Preview truncated; download the pprof file for the complete profile.]\n")
+		preview = preview[:buffer.limit-len(marker)]
+		if end := bytes.LastIndexByte(preview, '\n'); end >= 0 {
+			preview = preview[:end]
+		}
+		preview = append(preview, marker...)
+	}
+	c.Data(http.StatusOK, "text/plain; charset=utf-8", preview)
 }
 
 func collectPprof(ctx context.Context, target pprofTarget, writer io.Writer, debug int) error {

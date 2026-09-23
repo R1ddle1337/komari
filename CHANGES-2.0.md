@@ -12,3 +12,7 @@ This release requires coordinated server, frontend, Emerald and Agent deployment
 Existing metric data, node configuration, authentication, remote-control opt-outs and MOTD cleanup are preserved. One-time data import/recovery and current network/OS recovery remain necessary operations, not retired protocol paths.
 
 Validation: full Go tests; race checks on metric storage, agent state, ingest and RPC; frontend transport/onboarding tests and production build; Emerald lint/typecheck/build; traffic-report typecheck, isolated tuple aggregation tests and ZIP build. Deploy Agents before the server, and install matching UI/plugin packages with the server update.
+
+## 2.0.1
+
+Unknown API paths now return JSON 404 with no-store headers instead of falling through to the theme's HTML. This makes retired endpoints unambiguously unavailable while preserving SPA navigation. Verified both retired API paths and active frontend routes with HTTP handler tests.

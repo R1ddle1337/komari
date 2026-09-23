@@ -192,6 +192,11 @@ func TestStaticUpgradeCachePolicy(t *testing.T) {
 		status                       int
 		cache, contentType, contains string
 	}{
+		{"/api", 404, "no-store", "application/json", "API endpoint not found"},
+		{"/api/clients", 404, "no-store", "application/json", "API endpoint not found"},
+		{"/api/records/load", 404, "no-store", "application/json", "API endpoint not found"},
+		{"/api/clients/report", 404, "no-store", "application/json", "API endpoint not found"},
+		{"/instance/node-a", 200, "no-store", "text/html", "custom"},
 		{"/admin/dashboard", 200, "no-store", "text/html", `src="/themes/default/dist/assets/app-AbCd1234.js"`},
 		{"/", 200, "no-store", "text/html", "custom"},
 		{"/assets/old-AbCd1234.js", 404, "no-store", "text/plain", "Asset not found"},

@@ -342,6 +342,11 @@ func static(r *gin.RouterGroup, noRoute func(handlers ...gin.HandlerFunc), force
 
 	// 3. SPA 路由 (noRoute)
 	noRoute(func(c *gin.Context) {
+		if c.Request.URL.Path == "/api" || strings.HasPrefix(c.Request.URL.Path, "/api/") {
+			noStore(c)
+			c.JSON(http.StatusNotFound, gin.H{"status": "error", "message": "API endpoint not found"})
+			return
+		}
 		if c.Request.Method != http.MethodGet {
 			c.Status(http.StatusNotFound)
 			return

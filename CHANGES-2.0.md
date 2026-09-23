@@ -16,3 +16,7 @@ Validation: full Go tests; race checks on metric storage, agent state, ingest an
 ## 2.0.1
 
 Unknown API paths now return JSON 404 with no-store headers instead of falling through to the theme's HTML. This makes retired endpoints unambiguously unavailable while preserving SPA navigation. Verified both retired API paths and active frontend routes with HTTP handler tests.
+
+## 2.0.2
+
+The bundled workbench now offers only currently online nodes when opening terminal or file workspaces. Presence refreshes every five seconds and when opening the picker; offline node links and duplicate-session actions cannot open new connections. Failed presence reads hide stale candidates. Existing sessions remain available for reconnection. Validated with production-build browser tests covering online/offline transitions, retired links and network errors.

@@ -47,6 +47,7 @@ type publicMetricQueryParams struct {
 	Tags map[string]string `json:"tags"`
 
 	FillEmpty *bool `json:"fill_empty"`
+	Compact   bool  `json:"compact"`
 
 	MaxPoints         int            `json:"max_points"`
 	MaxPointsByMetric map[string]int `json:"max_points_by_metric"`
@@ -116,6 +117,7 @@ type publicPingMetricTaskStats struct {
 	Avg             *float64          `json:"avg,omitempty"`
 	Latest          *float64          `json:"latest,omitempty"`
 	P50             *float64          `json:"p50,omitempty"`
+	P95             *float64          `json:"p95,omitempty"`
 	P99             *float64          `json:"p99,omitempty"`
 	StdDev          *float64          `json:"stddev,omitempty"`
 	P99P50Ratio     float64           `json:"p99_p50_ratio"`
@@ -355,12 +357,16 @@ func publicQueryMetrics(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc
 		}
 	}
 
+	var outputSeries any = series
+	if params.Compact {
+		outputSeries = compactMetricSeries(series)
+	}
 	return map[string]any{
 		"start":                     start.UTC(),
 		"end":                       end.UTC(),
 		"server_downsample_default": true,
 		"default_points":            defaultMetricQueryPoints,
-		"series":                    series,
+		"series":                    outputSeries,
 		"count":                     len(series),
 	}, nil
 }
@@ -804,6 +810,7 @@ type publicPingMetricAggregateGroups struct {
 	Max           map[string][]metric.AggregatePoint
 	Last          map[string][]metric.AggregatePoint
 	P50           map[string][]metric.AggregatePoint
+	P95           map[string][]metric.AggregatePoint
 	P99           map[string][]metric.AggregatePoint
 	StdDev        map[string][]metric.AggregatePoint
 	Loss          map[string][]metric.AggregatePoint
@@ -817,6 +824,7 @@ func loadPublicPingMetricAggregateGroups(ctx context.Context, store *metric.Stor
 		metric.AggMax,
 		metric.AggLast,
 		metric.AggP50,
+		metric.AggP95,
 		metric.AggP99,
 		metric.AggStdDev,
 	}
@@ -841,12 +849,13 @@ func loadPublicPingMetricAggregateGroups(ctx context.Context, store *metric.Stor
 	maximum := groupPingMetricAggregatePointsByEntity(latency[metric.AggMax])
 	last := groupPingMetricAggregatePointsByEntity(latency[metric.AggLast])
 	p50 := groupPingMetricAggregatePointsByEntity(latency[metric.AggP50])
+	p95 := groupPingMetricAggregatePointsByEntity(latency[metric.AggP95])
 	p99 := groupPingMetricAggregatePointsByEntity(latency[metric.AggP99])
 	stddev := groupPingMetricAggregatePointsByEntity(latency[metric.AggStdDev])
 	loss := groupPingMetricAggregatePointsByEntity(lossPoints)
 
 	entitySet := make(map[string]struct{})
-	for _, groups := range []map[string]map[string][]metric.AggregatePoint{avg, minimum, maximum, last, p50, p99, stddev, loss} {
+	for _, groups := range []map[string]map[string][]metric.AggregatePoint{avg, minimum, maximum, last, p50, p95, p99, stddev, loss} {
 		for currentEntityID := range groups {
 			entitySet[currentEntityID] = struct{}{}
 		}
@@ -860,6 +869,7 @@ func loadPublicPingMetricAggregateGroups(ctx context.Context, store *metric.Stor
 			Max:           maximum[currentEntityID],
 			Last:          last[currentEntityID],
 			P50:           p50[currentEntityID],
+			P95:           p95[currentEntityID],
 			P99:           p99[currentEntityID],
 			StdDev:        stddev[currentEntityID],
 			Loss:          entityLoss,
@@ -900,7 +910,7 @@ func pingMetricGroupsHaveData(groups map[string][]metric.AggregatePoint) bool {
 func publicPingStatsFromAggregateGroups(entityID string, groups publicPingMetricAggregateGroups, taskMap map[string]models.PingTask, taskFilter map[string]bool) []publicPingMetricTaskStats {
 	taskIDs := make(map[string]struct{})
 	for _, group := range []map[string][]metric.AggregatePoint{
-		groups.Avg, groups.Min, groups.Max, groups.Last, groups.P50, groups.P99, groups.StdDev, groups.Loss,
+		groups.Avg, groups.Min, groups.Max, groups.Last, groups.P50, groups.P95, groups.P99, groups.StdDev, groups.Loss,
 	} {
 		for taskID := range group {
 			taskIDs[taskID] = struct{}{}
@@ -924,6 +934,7 @@ func publicPingStatsFromAggregateGroups(entityID string, groups publicPingMetric
 		lossRate, valid, approximate := publicPingLossRate(groups.Avg[taskID], groups.Loss[taskID], total, groups.LossAvailable)
 		avg, _ := weightedAggregateValue(groups.Avg[taskID], true)
 		p50, _ := weightedAggregateValue(groups.P50[taskID], true)
+		p95 := weightedAggregatePercentile(groups.P95[taskID], 0.95)
 		p99, _ := weightedAggregateValue(groups.P99[taskID], true)
 		stddev, _ := weightedAggregateValue(groups.StdDev[taskID], false)
 		minimum := positiveAggregateMin(groups.Min[taskID])
@@ -946,6 +957,7 @@ func publicPingStatsFromAggregateGroups(entityID string, groups publicPingMetric
 			Avg:             avg,
 			Latest:          latest,
 			P50:             p50,
+			P95:             p95,
 			P99:             p99,
 			StdDev:          stddev,
 		}

@@ -46,6 +46,13 @@ type rollupAggregateState struct {
 	tags        map[string]string
 }
 
+// Query buckets and their owning state share one allocation. Rate-only states
+// retain their smaller representation and do not allocate a summary bucket.
+type rollupSummaryState struct {
+	state  rollupAggregateState
+	bucket rollupBucket
+}
+
 type metricSeriesAccumulator struct {
 	spec        BatchSeriesSpec
 	compression float64
@@ -456,7 +463,12 @@ func (a *metricSeriesAccumulator) consume(meta *seriesReadMeta, sourceBucket, co
 	if a.needSummary {
 		state := a.groups[key]
 		if state == nil {
-			state = &rollupAggregateState{summary: newRollupBucketWithDigest(a.compression, a.needDigest)}
+			storage := &rollupSummaryState{}
+			state = &storage.state
+			state.summary = &storage.bucket
+			if a.needDigest {
+				state.summary.digest = NewTDigest(a.compression)
+			}
 			if a.spec.PreserveSeries {
 				state.tags = meta.tags
 			}

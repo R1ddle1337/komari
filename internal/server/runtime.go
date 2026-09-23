@@ -109,7 +109,14 @@ func (a *App) Run() error {
 	// The HTML injector runs outside the hook chain so it sees the final
 	// response: plugin hooks can still rewrite the body, then the registered
 	// head/body fragments are embedded into every text/html page.
-	a.server = &http.Server{Addr: a.listenAddr, Handler: plugin.HTMLInjectHandler(plugin.WrapHandler(a.engine))}
+	a.server = &http.Server{
+		Addr:              a.listenAddr,
+		Handler:           plugin.HTMLInjectHandler(plugin.WrapHandler(a.engine)),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       90 * time.Second,
+		// Body/write deadlines are endpoint-specific: large file transfers and
+		// diagnostic captures must remain usable over slow connections.
+	}
 	serverErr := make(chan error, 1)
 	logger.Infof("server", "Starting server on %s ...", a.listenAddr)
 	go func() {

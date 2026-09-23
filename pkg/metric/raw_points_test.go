@@ -2,6 +2,7 @@ package metric
 
 import (
 	"context"
+	"errors"
 	"math"
 	"path/filepath"
 	"strconv"
@@ -395,5 +396,49 @@ func TestRestartDropsRawButKeepsRollup(t *testing.T) {
 	}
 	if len(rollup) != 1 || rollup[0].Value != 7 || rollup[0].Count != 1 {
 		t.Fatalf("persisted rollup after restart = %#v", rollup)
+	}
+}
+
+func TestRawBatchPointLimitNeverReturnsPartialData(t *testing.T) {
+	s := newMemStore(t)
+	ctx := context.Background()
+	if err := s.CreateMetric(ctx, Definition{Name: "budget", Type: TypeGauge, RetentionDays: 1}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	points := make([]Point, 0, 100)
+	for i := 0; i < 100; i++ {
+		points = append(points, Point{MetricName: "budget", EntityID: "node", Timestamp: now.Add(time.Duration(i-100) * time.Second), Value: float64(i)})
+	}
+	if err := s.WriteBatch(ctx, points); err != nil {
+		t.Fatal(err)
+	}
+	for _, limit := range []int{0, 99, 100} {
+		got, err := s.QueryBatch(ctx, BatchQuery{MetricNames: []string{"budget"}, Start: now.Add(-2 * time.Minute), End: now, MaxPoints: limit})
+		if limit == 99 {
+			if !errors.Is(err, ErrQueryPointLimit) || got != nil {
+				t.Fatal("limited query returned partial data")
+			}
+			// The API falls back to aggregate series after this sentinel.
+			// Verify that fallback includes every sample, with correct weights.
+			aggregated, aggregateErr := s.SeriesBatch(ctx, BatchSeriesQuery{
+				Specs:     []BatchSeriesSpec{{MetricName: "budget", Aggregations: []Aggregation{AggSum}, Interval: time.Minute, PreserveSeries: true}},
+				EntityIDs: []string{"node"}, Start: now.Add(-2 * time.Minute), End: now,
+			}, now)
+			if aggregateErr != nil {
+				t.Fatal(aggregateErr)
+			}
+			count := 0
+			sum := 0.0
+			for _, point := range aggregated.Values["budget"][AggSum] {
+				count += point.Count
+				sum += point.Value
+			}
+			if count != 100 || sum != 4950 {
+				t.Fatalf("aggregate fallback lost samples: count=%d sum=%v", count, sum)
+			}
+		} else if err != nil || len(got["budget"]) != 100 {
+			t.Fatalf("valid query limit=%d: %v", limit, err)
+		}
 	}
 }

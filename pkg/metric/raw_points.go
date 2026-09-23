@@ -4,11 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
 	"time"
 )
+
+var ErrQueryPointLimit = errors.New("raw query point limit exceeded")
 
 const (
 	// directRawRetention keeps the newest samples in a directly searchable
@@ -308,7 +311,11 @@ func (s *Store) queryRawPointsBatch(ctx context.Context, query BatchQuery) (map[
 
 	s.rawMu.RLock()
 	defer s.rawMu.RUnlock()
+	pointCount := 0
 	for key, series := range s.raw {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if _, ok := metricNames[key.metricName]; !ok {
 			continue
 		}
@@ -332,10 +339,20 @@ func (s *Store) queryRawPointsBatch(ctx context.Context, query BatchQuery) (map[
 			additional += series.compressed.count
 		}
 		metricPoints := matched[key.metricName]
+		if query.MaxPoints > 0 && additional > query.MaxPoints-pointCount {
+			return nil, ErrQueryPointLimit
+		}
 		metricPoints.grow(additional)
 		if series.compressed.count > 0 && start <= series.compressed.lastStamp && end >= series.compressed.firstStamp() {
 			decoder := newRawSampleDecoder(series.compressed)
+			visited := 0
 			for sample, more := decoder.next(); more; sample, more = decoder.next() {
+				visited++
+				if visited%256 == 0 {
+					if err := ctx.Err(); err != nil {
+						return nil, err
+					}
+				}
 				if sample.timestamp < start {
 					continue
 				}
@@ -346,15 +363,28 @@ func (s *Store) queryRawPointsBatch(ctx context.Context, query BatchQuery) (map[
 				if err != nil {
 					return nil, err
 				}
+				if query.MaxPoints > 0 && pointCount >= query.MaxPoints {
+					return nil, ErrQueryPointLimit
+				}
 				appendRawQueryPoint(metricPoints, key, tags, labelMap, sample)
+				pointCount++
 			}
 		}
 		for _, sample := range series.samples[directStart:directEnd] {
+			if pointCount%256 == 0 {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+			}
 			labelMap, err := rawSampleLabels(series, labels, sample.labelID)
 			if err != nil {
 				return nil, err
 			}
+			if query.MaxPoints > 0 && pointCount >= query.MaxPoints {
+				return nil, ErrQueryPointLimit
+			}
 			appendRawQueryPoint(metricPoints, key, tags, labelMap, sample)
+			pointCount++
 		}
 	}
 	result := make(map[string][]Point, len(matched))

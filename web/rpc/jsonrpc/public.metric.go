@@ -2,6 +2,7 @@ package jsonrpc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -18,6 +19,10 @@ import (
 )
 
 const defaultMetricQueryPoints = 500
+const maxPublicMetricPoints = 10000
+const maxPublicRawPoints = 100000
+const maxPublicMetricBudget = 1000000
+const maxPublicMetricKeys = 64
 
 func init() {
 	regPublic("listMetricDefinitions", publicListMetricDefinitions, "List public metric definitions")
@@ -150,14 +155,19 @@ func publicListMetricDefinitions(ctx context.Context, _ *rpc.JsonRpcRequest) (an
 }
 
 func publicQueryMetrics(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+	ctx, release, err := acquireHistoryQuery(ctx)
+	if err != nil {
+		return nil, rpc.MakeError(rpc.InternalError, "history query canceled or timed out", nil)
+	}
+	defer release()
 	var params publicMetricQueryParams
 	if err := req.BindParams(&params); err != nil {
 		return nil, rpc.MakeError(rpc.InvalidParams, "Invalid request body: "+err.Error(), nil)
 	}
 
 	metricKeys := normalizeStringList(params.MetricKeys, params.Metrics, []string{params.MetricKey})
-	if len(metricKeys) == 0 {
-		return nil, rpc.MakeError(rpc.InvalidParams, "metric_keys is required", nil)
+	if len(metricKeys) == 0 || len(metricKeys) > maxPublicMetricKeys {
+		return nil, rpc.MakeError(rpc.InvalidParams, "metric_keys must contain between 1 and 64 metrics", nil)
 	}
 
 	queryNow := time.Now().UTC()
@@ -186,16 +196,22 @@ func publicQueryMetrics(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc
 		interval  time.Duration
 	}
 	loadSpecs := make([]metricLoadSpec, 0, len(metricKeys))
+	requestedPoints := 0
 	for _, metricKey := range metricKeys {
 		maxPoints, err := resolveMetricMaxPoints(metricKey, params)
 		if err != nil {
 			return nil, rpc.MakeError(rpc.InvalidParams, err.Error(), nil)
 		}
+		requestedPoints += maxPoints
 		loadSpecs = append(loadSpecs, metricLoadSpec{
 			metricKey: metricKey,
 			algorithm: resolveMetricAggregation(metricKey, params),
 			maxPoints: maxPoints,
 		})
+	}
+
+	if len(entityIDs) > 0 && requestedPoints > maxPublicMetricBudget/len(entityIDs) {
+		return nil, rpc.MakeError(rpc.InvalidParams, "query exceeds 1000000 requested points; reduce entities, metrics, or max_points", nil)
 	}
 
 	metricFillEmpty := resolveMetricFillEmpty(params)
@@ -215,6 +231,7 @@ func publicQueryMetrics(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc
 			}
 		}
 		rawValues, err = store.QueryBatch(ctx, metric.BatchQuery{
+			MaxPoints:   maxPublicRawPoints,
 			MetricNames: metricKeys,
 			EntityIDs:   entityIDs,
 			Start:       start,
@@ -222,10 +239,14 @@ func publicQueryMetrics(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc
 			Tags:        params.Tags,
 			Order:       metric.OrderAsc,
 		})
-		if err != nil {
+		if errors.Is(err, metric.ErrQueryPointLimit) {
+			useRaw = false
+			rawValues = nil
+		} else if err != nil {
 			return nil, rpc.MakeError(rpc.InvalidParams, "Failed to query metrics: "+err.Error(), nil)
 		}
-	} else if len(entityIDs) > 0 {
+	}
+	if len(entityIDs) > 0 && !useRaw {
 		batchSpecs := make([]metric.BatchSeriesSpec, 0, len(loadSpecs))
 		for i := range loadSpecs {
 			loadSpecs[i].interval = metricDownsampleInterval(end.Sub(start), loadSpecs[i].maxPoints)
@@ -255,7 +276,7 @@ func publicQueryMetrics(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc
 				return nil, rpc.MakeError(rpc.InvalidParams, "unknown metric key: "+spec.metricKey, nil)
 			}
 		}
-	} else {
+	} else if len(entityIDs) == 0 {
 		var err error
 		definitions, err = store.GetMetrics(ctx, metricKeys)
 		if err != nil {
@@ -412,6 +433,11 @@ func publicMetricUsesRawWindow(start, end, now time.Time) bool {
 }
 
 func publicGetPingMetricStats(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+	ctx, release, err := acquireHistoryQuery(ctx)
+	if err != nil {
+		return nil, rpc.MakeError(rpc.InternalError, "history query canceled or timed out", nil)
+	}
+	defer release()
 	var params publicPingMetricStatsParams
 	if err := req.BindParams(&params); err != nil {
 		return nil, rpc.MakeError(rpc.InvalidParams, "Invalid request body: "+err.Error(), nil)
@@ -456,6 +482,9 @@ func publicGetPingMetricStats(ctx context.Context, req *rpc.JsonRpcRequest) (any
 	maxPoints := params.MaxPoints
 	if maxPoints <= 0 {
 		maxPoints = defaultMetricQueryPoints
+	}
+	if maxPoints > maxPublicMetricPoints || (len(entityIDs) > 0 && maxPoints > maxPublicMetricBudget/len(entityIDs)) {
+		return nil, rpc.MakeError(rpc.InvalidParams, "ping stats query exceeds the point budget", nil)
 	}
 	now := time.Now().UTC()
 	interval := metricDownsampleInterval(end.Sub(start), maxPoints)
@@ -638,6 +667,9 @@ func clonePublicMetricTags(tags map[string]string) map[string]string {
 }
 
 func publicMetricEntityIDs(ctx context.Context, requested []string) ([]string, *rpc.JsonRpcError) {
+	if len(requested) > 2048 {
+		return nil, rpc.MakeError(rpc.InvalidParams, "at most 2048 entities can be queried at once", nil)
+	}
 	allClients, err := clients.GetAllClientBasicInfo()
 	if err != nil {
 		return nil, rpc.MakeError(rpc.InternalError, "Failed to retrieve client information: "+err.Error(), nil)
@@ -724,8 +756,8 @@ func resolveMetricMaxPoints(metricKey string, params publicMetricQueryParams) (i
 	if v, ok := params.MaxPointsByMetric[metricKey]; ok {
 		maxPoints = v
 	}
-	if maxPoints <= 0 {
-		return 0, fmt.Errorf("max points for %s must be a positive integer", metricKey)
+	if maxPoints <= 0 || maxPoints > maxPublicMetricPoints {
+		return 0, fmt.Errorf("max points for %s must be between 1 and %d", metricKey, maxPublicMetricPoints)
 	}
 	return maxPoints, nil
 }
@@ -1107,7 +1139,7 @@ func metricDownsampleInterval(rangeDuration time.Duration, maxPoints int) time.D
 	if nanos <= 0 {
 		return time.Second
 	}
-	interval := time.Duration((nanos + int64(maxPoints) - 1) / int64(maxPoints))
+	interval := time.Duration((nanos-1)/int64(maxPoints) + 1)
 	if interval < time.Second {
 		return time.Second
 	}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"errors"
 	logger "github.com/komari-monitor/komari/utils/log"
 	"io"
 	"net/http"
@@ -22,17 +23,29 @@ import (
 	"github.com/komari-monitor/komari/web/filemanager"
 )
 
+const maxAgentRequestBytes = 16 << 20
+
+var errAgentRequestTooLarge = errors.New("agent request exceeds 16 MiB")
+
 func readMaybeCompressedBody(r *http.Request) ([]byte, error) {
 	defer r.Body.Close()
+	var source io.Reader = io.LimitReader(r.Body, maxAgentRequestBytes+1)
 	if strings.EqualFold(r.Header.Get("Content-Encoding"), "gzip") {
-		zr, err := gzip.NewReader(r.Body)
+		zr, err := gzip.NewReader(source)
 		if err != nil {
 			return nil, err
 		}
 		defer zr.Close()
-		return io.ReadAll(zr)
+		source = zr
 	}
-	return io.ReadAll(r.Body)
+	data, err := io.ReadAll(io.LimitReader(source, maxAgentRequestBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxAgentRequestBytes {
+		return nil, errAgentRequestTooLarge
+	}
+	return data, nil
 }
 
 func bindV2Params[T any](raw any, target *T) error {
@@ -123,6 +136,10 @@ func handleV2RPC(uuid string, req v2.Request, allowWait bool) v2.Response {
 func UploadV2RPC(c *gin.Context) {
 	bytesBody, err := readMaybeCompressedBody(c.Request)
 	if err != nil {
+		if errors.Is(err, errAgentRequestTooLarge) {
+			c.JSON(http.StatusRequestEntityTooLarge, v2.Error(nil, -32600, err.Error(), nil))
+			return
+		}
 		c.JSON(http.StatusBadRequest, v2.Error(nil, -32700, "invalid compressed body", err.Error()))
 		return
 	}
@@ -155,6 +172,7 @@ func WebSocketV2RPC(c *gin.Context) {
 		return
 	}
 	defer conn.Close()
+	conn.SetReadLimit(maxAgentRequestBytes)
 
 	uuid, ok := clientUUIDFromContext(c)
 	if !ok {

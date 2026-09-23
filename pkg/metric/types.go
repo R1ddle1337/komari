@@ -294,6 +294,10 @@ type Query struct {
 // BatchQuery loads exact raw samples for multiple metrics and entities from one
 // shared time window.
 type BatchQuery struct {
+	// MaxPoints bounds materialized raw samples across all metrics/entities.
+	// Zero preserves unlimited internal queries; exceeding it returns an error,
+	// never an incomplete result masquerading as a complete time window.
+	MaxPoints   int               `json:"max_points,omitempty"`
 	MetricNames []string          `json:"metric_names"`
 	EntityIDs   []string          `json:"entity_ids,omitempty"`
 	Start       time.Time         `json:"start"`
@@ -366,6 +370,9 @@ func (q Query) normalized() Query {
 
 // Validate checks whether a batch raw query is well formed.
 func (q BatchQuery) Validate() error {
+	if q.MaxPoints < 0 {
+		return fmt.Errorf("%w: max points cannot be negative", ErrInvalidArgument)
+	}
 	if len(q.MetricNames) == 0 {
 		return fmt.Errorf("%w: at least one metric name is required", ErrInvalidArgument)
 	}

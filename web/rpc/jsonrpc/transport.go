@@ -1,6 +1,7 @@
 package jsonrpc
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,9 @@ import (
 	"github.com/komari-monitor/komari/pkg/rpc"
 	"github.com/komari-monitor/komari/web/api"
 )
+
+const maxRPCRequestBytes = 16 << 20
+const maxRPCBatchRequests = 100
 
 // OnRpcRequest 是 /api/rpc2 的统一入口：GET 升级为 WebSocket，POST 处理单条/批量 JSON-RPC。
 func OnRpcRequest(c *gin.Context) {
@@ -95,6 +99,7 @@ func serveWebSocket(c *gin.Context) {
 		return
 	}
 	defer conn.Close()
+	conn.SetReadLimit(maxRPCRequestBytes)
 
 	meta := buildContextMeta(c)
 	for {
@@ -119,8 +124,14 @@ func serveWebSocket(c *gin.Context) {
 }
 
 func servePost(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxRPCRequestBytes)
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			c.JSON(http.StatusRequestEntityTooLarge, rpc.ErrorResponse(nil, rpc.InvalidRequest, "RPC request exceeds 16 MiB", nil))
+			return
+		}
 		c.JSON(http.StatusBadRequest, rpc.ErrorResponse(nil, rpc.ParseError, "read body error", err.Error()))
 		return
 	}
@@ -129,17 +140,38 @@ func servePost(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, jerr.Response())
 		return
 	}
+	if len(requests) > maxRPCBatchRequests {
+		c.JSON(http.StatusRequestEntityTooLarge, rpc.ErrorResponse(nil, rpc.InvalidRequest, "RPC batch exceeds 100 requests", nil))
+		return
+	}
 	meta := buildContextMeta(c)
 
-	responses := make([]*rpc.JsonRpcResponse, 0, len(requests))
-	for _, rreq := range requests {
-		responses = append(responses, dispatchWithSensitive(c.Request.Context(), c, meta, rreq))
+	batch := bytes.HasPrefix(bytes.TrimSpace(body), []byte("["))
+	c.Header("Content-Type", "application/json; charset=utf-8")
+	c.Status(http.StatusOK)
+	if batch {
+		if _, err := c.Writer.Write([]byte("[")); err != nil {
+			return
+		}
 	}
-	// 单条直接对象，批量数组（符合 JSON-RPC 2.0）。
-	if len(responses) == 1 {
-		c.JSON(http.StatusOK, responses[0])
-	} else {
-		c.JSON(http.StatusOK, responses)
+	encoder := json.NewEncoder(c.Writer)
+	for i, rreq := range requests {
+		if c.Request.Context().Err() != nil {
+			return
+		}
+		if i > 0 {
+			if _, err := c.Writer.Write([]byte(",")); err != nil {
+				return
+			}
+		}
+		// Encode each response before dispatching the next request. Keeping a
+		// batch's entire history payloads alive can multiply memory by 100.
+		if err := encoder.Encode(dispatchWithSensitive(c.Request.Context(), c, meta, rreq)); err != nil {
+			return
+		}
+	}
+	if batch {
+		_, _ = c.Writer.Write([]byte("]"))
 	}
 }
 

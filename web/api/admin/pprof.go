@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/komari-monitor/komari/utils"
 	"github.com/komari-monitor/komari/web/api"
 )
 
@@ -26,8 +27,9 @@ const (
 )
 
 var (
-	cpuProfileMu   sync.Mutex
-	traceProfileMu sync.Mutex
+	profileProcessStarted = time.Now()
+	cpuProfileMu          sync.Mutex
+	traceProfileMu        sync.Mutex
 
 	errPprofBusy            = errors.New("pprof collection is already in progress")
 	errPprofUnavailable     = errors.New("pprof profile is not available")
@@ -80,6 +82,12 @@ type pprofMemorySummary struct {
 }
 
 type pprofSummary struct {
+	Build struct {
+		Version       string `json:"version"`
+		Revision      string `json:"revision"`
+		GoVersion     string `json:"go_version"`
+		UptimeSeconds int64  `json:"uptime_seconds"`
+	} `json:"build"`
 	Profiles []pprofProfileInfo `json:"profiles"`
 	Runtime  struct {
 		Goroutines int                `json:"goroutines"`
@@ -150,6 +158,10 @@ func pprofSummaryHandler(c *gin.Context) {
 	}
 
 	response.Runtime.Goroutines = runtime.NumGoroutine()
+	response.Build.Version = utils.CurrentVersion
+	response.Build.Revision = utils.VersionHash
+	response.Build.GoVersion = runtime.Version()
+	response.Build.UptimeSeconds = int64(time.Since(profileProcessStarted).Seconds())
 	response.Runtime.Memory = pprofMemorySummary{
 		HeapAlloc:   mem.HeapAlloc,
 		HeapInuse:   mem.HeapInuse,

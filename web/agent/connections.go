@@ -10,17 +10,14 @@ import (
 )
 
 type clientPresence struct {
-	id              int64
-	expire          time.Time
-	protocolVersion int
+	id     int64
+	expire time.Time
 }
 
 var (
-	connectedClients    = make(map[string]*connection.SafeConn)
-	connectionProtocols = make(map[string]int)
-	v2Clients           = make(map[string]struct{})
-	latestReport        = make(map[string]*v2.Report)
-	recentReports       = make(map[string][]v2.Report)
+	connectedClients = make(map[string]*connection.SafeConn)
+	latestReport     = make(map[string]*v2.Report)
+	recentReports    = make(map[string][]v2.Report)
 	// presenceOnly stores online state for non-WebSocket agents.
 	// value keeps connectionID and a soft expiration to avoid flicker
 	presenceOnly = make(map[string]clientPresence)
@@ -39,34 +36,31 @@ func GetConnectedClients() map[string]*connection.SafeConn {
 	return clientsCopy
 }
 
-func SetConnectedClients(uuid string, conn *connection.SafeConn) {
+// RegisterConnectedClient atomically replaces a connection and returns its predecessor.
+func RegisterConnectedClient(uuid string, conn *connection.SafeConn) *connection.SafeConn {
 	mu.Lock()
 	defer mu.Unlock()
+	previous := connectedClients[uuid]
 	connectedClients[uuid] = conn
-	connectionProtocols[uuid] = 2
+	return previous
 }
 
-// GetConnectedClient 同步读取连接与其协议，防止重连期间把新格式发给旧连接。
-func GetConnectedClient(uuid string) (*connection.SafeConn, int) {
+func GetConnectedClient(uuid string) *connection.SafeConn {
 	mu.RLock()
 	defer mu.RUnlock()
-	return connectedClients[uuid], connectionProtocols[uuid]
+	return connectedClients[uuid]
 }
 
-func MarkV2Client(uuid string) {
-	mu.Lock()
-	defer mu.Unlock()
-	v2Clients[uuid] = struct{}{}
-}
-
-func IsV2Client(uuid string) bool {
+func IsCurrentClientConnection(uuid string, conn *connection.SafeConn) bool {
 	mu.RLock()
 	defer mu.RUnlock()
-	if connectedClients[uuid] != nil {
-		return connectionProtocols[uuid] >= 2
-	}
-	_, ok := v2Clients[uuid]
-	return ok
+	return connectedClients[uuid] == conn
+}
+
+func IsAgentOnline(uuid string) bool {
+	mu.RLock()
+	defer mu.RUnlock()
+	return connectedClients[uuid] != nil || presenceOnly[uuid].expire.After(time.Now())
 }
 
 func DeleteClientConditionally(uuid string, connToRemove *connection.SafeConn) {
@@ -76,12 +70,7 @@ func DeleteClientConditionally(uuid string, connToRemove *connection.SafeConn) {
 	// 检查当前 map 里的 conn 是否就是要删除的这一个
 	if currentConn, exists := connectedClients[uuid]; exists && currentConn == connToRemove {
 		delete(connectedClients, uuid)
-		delete(connectionProtocols, uuid)
-		if presence := presenceOnly[uuid]; presence.protocolVersion >= 2 && presence.expire.After(time.Now()) {
-			v2Clients[uuid] = struct{}{}
-		} else {
-			delete(v2Clients, uuid)
-		}
+
 	}
 }
 func DeleteConnectedClients(uuid string) {
@@ -89,29 +78,19 @@ func DeleteConnectedClients(uuid string) {
 	defer mu.Unlock()
 	// 只从 map 中删除，不再负责关闭连接
 	delete(connectedClients, uuid)
-	delete(connectionProtocols, uuid)
-	delete(v2Clients, uuid)
 }
 
-// SetPresence sets or clears presence for non-WebSocket agents.
-// When present=false, it only clears if the connectionID matches current one.
-// KeepAlivePresence sets presence with TTL for non-WebSocket agents.
+// KeepAlivePresence refreshes the expiration for HTTP agents.
 func KeepAlivePresence(uuid string, connectionID int64, ttl time.Duration) {
 	mu.Lock()
 	defer mu.Unlock()
-	presenceOnly[uuid] = clientPresence{id: connectionID, expire: time.Now().Add(ttl), protocolVersion: 2}
+	presenceOnly[uuid] = clientPresence{id: connectionID, expire: time.Now().Add(ttl)}
 }
 
-var defaultPresenceTTL = 20 * time.Second
-
-// SetPresence keeps compatibility with existing callers.
-func SetPresence(uuid string, connectionID int64, present bool) {
+// ClearPresence only removes the matching HTTP session.
+func ClearPresence(uuid string, connectionID int64) {
 	mu.Lock()
 	defer mu.Unlock()
-	if present {
-		presenceOnly[uuid] = clientPresence{id: connectionID, expire: time.Now().Add(defaultPresenceTTL), protocolVersion: 2}
-		return
-	}
 	if cur, ok := presenceOnly[uuid]; ok && cur.id == connectionID {
 		delete(presenceOnly, uuid)
 	}
@@ -152,7 +131,7 @@ func GetLatestReport() map[string]*v2.Report {
 }
 
 // RecordReport updates the latest runtime state and keeps only the short raw
-// window used by recent-status compatibility endpoints.
+// window used by live status charts.
 func RecordReport(report v2.Report) {
 	mu.Lock()
 	defer mu.Unlock()

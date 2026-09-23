@@ -308,6 +308,8 @@ type BatchQuery struct {
 
 // BatchSeriesSpec describes the rollup output requested for one metric.
 type BatchSeriesSpec struct {
+	// WholeWindow merges all selected source buckets into one distribution per series.
+	WholeWindow    bool
 	MetricName     string
 	Aggregations   []Aggregation
 	Interval       time.Duration
@@ -328,6 +330,7 @@ type BatchSeriesQuery struct {
 // BatchSeriesResult contains definitions and aggregate values keyed by metric
 // and aggregation.
 type BatchSeriesResult struct {
+	Summaries   map[string][]Distribution
 	Definitions map[string]Definition
 	Values      map[string]map[Aggregation][]AggregatePoint
 }
@@ -419,6 +422,9 @@ func (q BatchSeriesQuery) Validate() error {
 			return fmt.Errorf("%w: at least one aggregation is required for metric %q", ErrInvalidArgument, spec.MetricName)
 		}
 		for _, aggregation := range spec.Aggregations {
+			if spec.WholeWindow && aggregation == AggRate {
+				return fmt.Errorf("%w: whole-window distributions do not support rate", ErrInvalidArgument)
+			}
 			if err := (AggregateQuery{
 				Query:          Query{MetricName: spec.MetricName, Start: q.Start, End: q.End, Tags: q.Tags, Order: q.Order},
 				Aggregation:    aggregation,

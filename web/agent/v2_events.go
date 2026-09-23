@@ -41,16 +41,12 @@ func getV2EventQueueLocked(uuid string) *v2EventQueue {
 }
 
 func DispatchV2Event(uuid, method string, params any) bool {
-	if conn, protocolVersion := GetConnectedClient(uuid); conn != nil {
-		payload, supported := agentEventPayload(protocolVersion, method, params)
-		if !supported {
-			return false
-		}
-		if conn.WriteJSON(payload) == nil {
+	if conn := GetConnectedClient(uuid); conn != nil {
+		if conn.WriteJSON(v2.Request{JSONRPC: v2.Version, Method: method, Params: params}) == nil {
 			return true
 		}
 	}
-	if !IsV2Client(uuid) {
+	if !IsAgentOnline(uuid) {
 		return false
 	}
 	EnqueueV2Event(uuid, method, params)
@@ -59,13 +55,6 @@ func DispatchV2Event(uuid, method string, params any) bool {
 
 func DispatchPing(uuid string, params v2.PingParams) bool {
 	return DispatchV2Event(uuid, v2.MethodAgentPing, params)
-}
-
-func IsAgentOnline(uuid string) bool {
-	if GetConnectedClients()[uuid] != nil {
-		return true
-	}
-	return IsV2Client(uuid)
 }
 
 func EnqueueV2Event(uuid, method string, params any) v2.Event {

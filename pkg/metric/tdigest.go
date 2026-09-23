@@ -221,15 +221,13 @@ func (t *TDigest) process() {
 	t.processed = true
 }
 
-// Quantile estimates the value at q in [0,1] using linear interpolation between
-// centroid centers, with the extreme tails anchored to the observed min/max.
-//
-// Quantile 用质心中心之间的线性插值估算 [0,1] 分位点，极端尾部锚定到
-// 已观测的最小值和最大值。
+// Quantile returns the weighted rank's centroid mean. Treating centroid weights
+// as probability mass avoids interpolating across gaps between disjoint modes
+// (e.g. 90 probes at 10 ms and 10 at 1000 ms must have a median near 10 ms).
+// The estimate is limited by sketch compression; q=0/1 retain exact extrema.
 func (t *TDigest) Quantile(q float64) float64 {
 	t.process()
-	n := len(t.centroids)
-	if n == 0 {
+	if len(t.centroids) == 0 || math.IsNaN(q) {
 		return math.NaN()
 	}
 	if q <= 0 {
@@ -238,35 +236,15 @@ func (t *TDigest) Quantile(q float64) float64 {
 	if q >= 1 {
 		return t.max
 	}
-	if n == 1 {
-		return t.centroids[0].mean
-	}
-	index := q * t.count
-
-	// Head: between the observed min and the first centroid's center.
-	c0 := t.centroids[0]
-	if index < c0.weight/2 {
-		z := index / (c0.weight / 2)
-		return t.min + (c0.mean-t.min)*z
-	}
-	weightSoFar := c0.weight / 2
-	for i := 0; i < n-1; i++ {
-		c := t.centroids[i]
-		next := t.centroids[i+1]
-		dw := (c.weight + next.weight) / 2
-		if index < weightSoFar+dw {
-			z := (index - weightSoFar) / dw
-			return c.mean*(1-z) + next.mean*z
+	rank := q * t.count
+	cumulative := 0.0
+	for _, c := range t.centroids {
+		cumulative += c.weight
+		if cumulative >= rank {
+			return c.mean
 		}
-		weightSoFar += dw
 	}
-	// Tail: between the last centroid's center and the observed max.
-	cl := t.centroids[n-1]
-	z := (index - weightSoFar) / (cl.weight / 2)
-	if z > 1 {
-		z = 1
-	}
-	return cl.mean + (t.max-cl.mean)*z
+	return t.max
 }
 
 // Encode serializes the (processed) digest to a compact little-endian blob:

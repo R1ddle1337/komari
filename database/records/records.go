@@ -2,10 +2,8 @@ package records
 
 import (
 	"context"
-	"time"
 
 	"github.com/komari-monitor/komari/internal/metricstore"
-	"github.com/komari-monitor/komari/database/models"
 )
 
 // 历史监控数据已完全迁移到 metric store（默认 SQLite ./data/metrics.db，或配置的
@@ -17,23 +15,4 @@ import (
 
 func DeleteAll() error {
 	return metricstore.DeleteAllRecords(context.Background())
-}
-
-// GetGPURecordsByClientAndTime 获取 GPU 记录数据。
-func GetGPURecordsByClientAndTime(uuid string, start, end time.Time) ([]models.GPURecord, error) {
-	return metricstore.GetGPURecordsByClientAndTime(context.Background(), uuid, start, end)
-}
-
-func GetRecordsByClientAndTime(uuid string, start, end time.Time) ([]models.Record, error) {
-	return metricstore.GetRecordsByClientAndTime(context.Background(), uuid, start, end)
-}
-
-// GetRecordMetricMaxByClientAndTime 获取单项监控指标在各时间桶内的最大值。
-func GetRecordMetricMaxByClientAndTime(uuid, metricName string, start, end time.Time) ([]models.Record, error) {
-	return metricstore.GetRecordMetricMaxByClientAndTime(context.Background(), uuid, metricName, start, end)
-}
-
-// GetRecordsByTime 获取所有客户端在时间范围内的记录。
-func GetRecordsByTime(start, end time.Time) ([]models.Record, error) {
-	return metricstore.GetRecordsByTime(context.Background(), start, end)
 }

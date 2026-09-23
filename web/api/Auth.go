@@ -91,7 +91,6 @@ var publicPaths = []string{
 	"/api/oauth",
 	"/api/oauth_callback",
 	"/api/version",
-	"/api/recent",
 	"/api/admin",    // 由 RequireRole 处理
 	"/api/clients/", // 由 RequireRole 处理
 	"/api/preview/", // 预览令牌校验后放行

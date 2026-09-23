@@ -2,7 +2,6 @@ package client
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/komari-monitor/komari/database/clients"
@@ -14,21 +13,11 @@ import (
 )
 
 // ingest.go
-// agent 上报数据的传输无关处理逻辑。v1 兼容入口与 v2 HTTP/WebSocket 入口
-// 经过协议解析后，统一调用这里的函数落库并更新运行时状态。
+// v2 HTTP/WebSocket 上报共用的入库与运行时状态处理。
 
 // ingestReport 保存一次负载上报并刷新运行时状态。
 // markPresence 为 true 时按 POST 上报会话刷新在线状态（WS 连接自行管理在线状态，应传 false）。
 func ingestReport(uuid string, report v2.Report, markPresence bool) error {
-	return ingestReportForProtocol(uuid, report, 2, markPresence)
-}
-
-var errLegacyProtocolSuperseded = errors.New("an active v2 connection already owns this client")
-
-func ingestReportForProtocol(uuid string, report v2.Report, protocolVersion int, markPresence bool) error {
-	if protocolVersion < 2 && agent_runtime.HasActiveV2Client(uuid) {
-		return errLegacyProtocolSuperseded
-	}
 	report.UUID = uuid
 	report.UpdatedAt = time.Now().UTC()
 	if err := clients.ReportVerify(report); err != nil {
@@ -38,17 +27,10 @@ func ingestReportForProtocol(uuid string, report v2.Report, protocolVersion int,
 	if err != nil {
 		return err
 	}
-	// 先登记 HTTP 协议归属，再更新缓存，关闭 v2 POST 接管时的旧报告覆盖窗口。
-	if markPresence && !refreshPostPresenceForProtocol(uuid, protocolVersion) {
-		return errLegacyProtocolSuperseded
+	if markPresence {
+		refreshPostPresence(uuid)
 	}
-	if protocolVersion >= 2 {
-		agent_runtime.RecordReport(savedReport)
-		agent_runtime.MarkV2Client(uuid)
-	} else if !agent_runtime.RecordLegacyReport(savedReport) {
-		// v2 可能在落库期间接管；已接收采样保留，但旧连接不能覆盖运行时状态。
-		return errLegacyProtocolSuperseded
-	}
+	agent_runtime.RecordReport(savedReport)
 	return nil
 }
 

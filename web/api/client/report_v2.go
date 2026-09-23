@@ -110,7 +110,6 @@ func handleV2RPC(uuid string, req v2.Request, allowWait bool) v2.Response {
 			return v2.Error(req.ID, -32602, "invalid pull params", err.Error())
 		}
 		refreshPostPresence(uuid)
-		agent_runtime.MarkV2Client(uuid)
 		timeout := 0 * time.Second
 		if allowWait {
 			timeout = 25 * time.Second
@@ -179,7 +178,7 @@ func WebSocketV2RPC(c *gin.Context) {
 		conn.WriteJSON(v2.Error(nil, -32001, "invalid token", nil))
 		return
 	}
-	if oldConn, _ := agent_runtime.RegisterConnectedClient(uuid, conn, 2); oldConn != nil {
+	if oldConn := agent_runtime.RegisterConnectedClient(uuid, conn); oldConn != nil {
 		go oldConn.Close()
 	}
 	go notifierOnline(uuid, conn.ID)
@@ -205,6 +204,9 @@ func WebSocketV2RPC(c *gin.Context) {
 		if err := json.Unmarshal(message, &req); err != nil {
 			conn.WriteJSON(v2.Error(nil, -32700, "parse error", err.Error()))
 			continue
+		}
+		if !agent_runtime.IsCurrentClientConnection(uuid, conn) {
+			return
 		}
 		resp := handleV2RPC(uuid, req, false)
 		if req.ID != nil {

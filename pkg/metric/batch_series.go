@@ -99,6 +99,7 @@ func (s *Store) seriesBatchAt(ctx context.Context, query BatchSeriesQuery, now t
 
 	result := BatchSeriesResult{
 		Definitions: definitions,
+		Summaries:   make(map[string][]Distribution),
 		Values:      make(map[string]map[Aggregation][]AggregatePoint, len(query.Specs)),
 	}
 	accumulators := make(map[string]*metricSeriesAccumulator, len(query.Specs))
@@ -179,6 +180,10 @@ func (s *Store) seriesBatchAt(ctx context.Context, query BatchSeriesQuery, now t
 	}
 
 	for metricName, accumulator := range accumulators {
+		if accumulator.spec.WholeWindow {
+			result.Summaries[metricName] = accumulator.distributions()
+			continue
+		}
 		values, err := accumulator.points(query.Order)
 		if err != nil {
 			return BatchSeriesResult{}, err
@@ -456,6 +461,9 @@ func stringSet(values []string) map[string]struct{} {
 
 func (a *metricSeriesAccumulator) consume(meta *seriesReadMeta, sourceBucket, count int64, sum, sumSq, min, max, firstVal float64, firstTS int64, lastVal float64, lastTS int64, digest *TDigest) *rollupAggregateState {
 	key := rollupKey{bucket: bucketStartMillis(sourceBucket, a.spec.Interval.Milliseconds())}
+	if a.spec.WholeWindow {
+		key.bucket = 0
+	}
 	if a.spec.PreserveSeries {
 		key.entityID = meta.entityID
 		key.tagsHash = meta.tagsHash

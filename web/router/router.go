@@ -47,18 +47,12 @@ func registerPublicRoutes(r *gin.Engine) {
 	// 短期文件预览令牌公开下载入口，供 Office 在线预览等服务端抓取。
 	r.GET("/api/preview/client/:uuid/file/download", filemanager.PreviewDownload)
 	r.HEAD("/api/preview/client/:uuid/file/download", filemanager.PreviewDownload)
-	// /api/clients 是 WebSocket 端点（客户端发 "get"/"get <uuid>" 拉取在线列表与最新上报），
-	// 非 JSON-RPC，保留为 WS handler。
-	r.GET("/api/clients", api.GetClients)
 
 	// JSON 接口 -> RPC2。
 	r.GET("/api/me", jsonRpc.Bind("public:getMe", jsonRpc.WithRaw()))
 	r.GET("/api/nodes", jsonRpc.Bind("public:getNodesInformation"))
 	r.GET("/api/public", jsonRpc.Bind("public:getPublicSettings"))
 	r.GET("/api/version", jsonRpc.Bind("public:getVersion"))
-	r.GET("/api/recent/:uuid", jsonRpc.Bind("public:getClientRecentRecords", jsonRpc.WithPath("uuid")))
-	r.GET("/api/records/load", jsonRpc.Bind("public:getRecordsByUUID", jsonRpc.WithQuery("uuid", "load_type", "hours")))
-	r.GET("/api/records/ping", jsonRpc.Bind("public:getPingRecords", jsonRpc.WithQuery("uuid", "task_id", "hours")))
 	r.GET("/api/task/ping", jsonRpc.Bind("public:getPublicPingTasks"))
 
 	// JSON-RPC 直连入口。
@@ -73,14 +67,6 @@ func registerAgentRoutes(r *gin.Engine) {
 
 	tokenAuthorized := r.Group("/api/clients", api.RequireRole(api.RoleAdmin, api.RoleClient))
 	{
-		// 保留既有 v1 节点的鉴权入口；数据仍进入新版统一指标存储。
-		tokenAuthorized.GET("/report", client.WebSocketReport)
-		tokenAuthorized.POST("/report", client.UploadReport)
-		tokenAuthorized.POST("/uploadBasicInfo", client.UploadBasicInfo)
-		tokenAuthorized.POST("/task/result", jsonRpc.Bind("client:taskResult", jsonRpc.WithRaw()))
-		tokenAuthorized.GET("/ping/tasks", jsonRpc.Bind("client:getPingTasks", jsonRpc.WithRaw()))
-		tokenAuthorized.POST("/ping/result", jsonRpc.Bind("client:uploadPingResult", jsonRpc.WithRaw()))
-		// 新版 v2 与文件流接口保持不变。
 		tokenAuthorized.GET("/v2/rpc", client.WebSocketV2RPC)
 		tokenAuthorized.POST("/v2/rpc", client.UploadV2RPC)
 		// File data uses a short-lived, raw HTTP stream opened by a file RPC.

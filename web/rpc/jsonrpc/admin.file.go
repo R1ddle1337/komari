@@ -237,8 +237,6 @@ func fileOperationError(err error) *rpc.JsonRpcError {
 	switch {
 	case errors.Is(err, filemanager.ErrOffline):
 		code = rpc.Unavailable
-	case errors.Is(err, filemanager.ErrUnsupported):
-		code = rpc.Unimplemented
 	case errors.Is(err, filemanager.ErrTimeout), errors.Is(err, context.DeadlineExceeded):
 		code = rpc.DeadlineExceeded
 	case errors.Is(err, context.Canceled):

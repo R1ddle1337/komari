@@ -268,27 +268,13 @@ func percentile(points []Point, p float64) float64 {
 	return percentileSorted(values, p)
 }
 
-// percentileSorted returns the linear-interpolation percentile of an
-// already-sorted slice. Shared by percentile() and the raw-value paths so the
-// interpolation method stays identical everywhere.
-//
-// percentileSorted 基于已排序切片用线性插值计算百分位，供原始值路径和
-// percentile 共用，确保所有路径的插值方法一致。
+// percentileSorted uses the nearest rank, matching the weighted-rank sketch.
 func percentileSorted(values []float64, p float64) float64 {
 	if len(values) == 0 {
 		return 0
 	}
-	if len(values) == 1 {
-		return values[0]
-	}
-	pos := p * float64(len(values)-1)
-	lower := int(math.Floor(pos))
-	upper := int(math.Ceil(pos))
-	if lower == upper {
-		return values[lower]
-	}
-	weight := pos - float64(lower)
-	return values[lower]*(1-weight) + values[upper]*weight
+	rank := int(math.Ceil(p*float64(len(values)))) - 1
+	return values[max(0, min(rank, len(values)-1))]
 }
 
 // alignTime floors a timestamp to the start of its interval bucket.

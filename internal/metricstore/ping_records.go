@@ -3,8 +3,6 @@ package metricstore
 import (
 	"context"
 	"fmt"
-	"sort"
-	"time"
 
 	"github.com/komari-monitor/komari/database/models"
 	"github.com/komari-monitor/komari/pkg/metric"
@@ -60,74 +58,4 @@ func writePingRecords(ctx context.Context, records []models.PingRecord) error {
 		)
 	}
 	return s.WriteBatch(ctx, points)
-}
-
-func GetPingRecords(ctx context.Context, clientUUID string, taskID int, start, end time.Time) ([]models.PingRecord, error) {
-	s := GetStore()
-	if s == nil {
-		return nil, fmt.Errorf("metric store not enabled")
-	}
-
-	query := metric.Query{
-		MetricName: MetricPingLatency,
-		Start:      start,
-		End:        end,
-		Order:      metric.OrderAsc,
-	}
-
-	if clientUUID != "" {
-		query.EntityID = clientUUID
-	}
-
-	if taskID >= 0 {
-		query.Tags = map[string]string{"task_id": fmt.Sprintf("%d", taskID)}
-	}
-
-	interval := pingQueryInterval(end.Sub(start), 4000)
-	interval = s.CompatibleSeriesInterval(start, time.Now().UTC(), interval)
-	points, err := s.Series(ctx, metric.AggregateQuery{
-		Query:          query,
-		Aggregation:    metric.AggLast,
-		Interval:       interval,
-		PreserveSeries: true,
-	}, time.Now().UTC())
-	if err != nil {
-		return nil, err
-	}
-
-	records := make([]models.PingRecord, 0, len(points))
-	for _, p := range points {
-		taskIDVal := uint(0)
-		if tid, ok := p.Tags["task_id"]; ok {
-			var t uint64
-			fmt.Sscanf(tid, "%d", &t)
-			taskIDVal = uint(t)
-		}
-
-		records = append(records, models.PingRecord{
-			Client: p.EntityID,
-			TaskId: taskIDVal,
-			Time:   p.Bucket.UTC(),
-			Value:  int(p.Value),
-		})
-	}
-	sort.Slice(records, func(i, j int) bool {
-		return records[i].Time.After(records[j].Time)
-	})
-
-	return records, nil
-}
-
-func pingQueryInterval(rangeDuration time.Duration, maxPoints int) time.Duration {
-	if maxPoints <= 0 {
-		maxPoints = 4000
-	}
-	if rangeDuration <= 0 {
-		return time.Second
-	}
-	interval := time.Duration((rangeDuration.Nanoseconds() + int64(maxPoints) - 1) / int64(maxPoints))
-	if interval < time.Second {
-		return time.Second
-	}
-	return metric.FloorStandardInterval(interval)
 }

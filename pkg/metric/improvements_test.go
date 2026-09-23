@@ -491,8 +491,8 @@ func TestAggregateSeparatesTagSeries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("memory aggregate: %v", err)
 	}
-	assertTaggedAggregate(t, memRes, "0", 20, 2)
-	assertTaggedAggregate(t, memRes, "1", 150, 2)
+	assertTaggedAggregate(t, memRes, "0", 10, 2)
+	assertTaggedAggregate(t, memRes, "1", 100, 2)
 }
 
 func assertTaggedAggregate(t *testing.T, points []AggregatePoint, device string, wantValue float64, wantCount int) {

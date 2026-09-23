@@ -34,12 +34,21 @@ func TestPrivateSiteLoginWhitelist(t *testing.T) {
 	// 节点列表等数据接口不应在白名单(应被私有站点拦截)。
 	mustBlocked := []string{
 		"public:getNodesInformation",
-		"public:getRecordsByUUID",
-		"public:getPingRecords",
+		"public:queryMetrics",
+		"public:getPingMetricStats",
 	}
 	for _, m := range mustBlocked {
 		if privateSiteLoginWhitelist[m] {
 			t.Errorf("data method %q must NOT be in privateSiteLoginWhitelist (would leak data under private site)", m)
+		}
+	}
+}
+
+func TestRetiredRPCMethodsAreUnregistered(t *testing.T) {
+	for _, method := range []string{"common:getRecords", "public:getClientRecentRecords", "public:getRecordsByUUID", "public:getPingRecords", "client:taskResult", "client:getPingTasks", "client:uploadPingResult"} {
+		resp := rpc.Call(1, "rpc.help", map[string]any{"method": method})
+		if resp.Error == nil {
+			t.Errorf("retired method still registered: %s", method)
 		}
 	}
 }

@@ -7,9 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/komari-monitor/komari/database/models"
 	"github.com/komari-monitor/komari/pkg/metric"
-	v2 "github.com/komari-monitor/komari/protocol/v2"
 )
 
 func TestDefaultRollupPolicy(t *testing.T) {
@@ -167,57 +165,6 @@ func TestBuildMetricConfigAlwaysEnablesDownsampling(t *testing.T) {
 	}
 	if !cfg.RollupPolicy.Enabled() {
 		t.Fatal("expected rollup policy to be enabled")
-	}
-}
-
-func TestGetPingRecordsReadsRollupsAfterRawCompaction(t *testing.T) {
-	ctx := context.Background()
-	now := time.Now().UTC().Truncate(time.Second)
-	s, err := metric.Open(ctx, metric.SQLite(":memory:",
-		metric.WithMaxOpenConns(1),
-		metric.WithRollupPolicy(defaultRollupPolicy()),
-	))
-	if err != nil {
-		t.Fatalf("open metric store: %v", err)
-	}
-	defer s.Close()
-	if err := s.UpsertMetric(ctx, metric.Definition{
-		Name:          MetricPingLatency,
-		Type:          metric.TypeGauge,
-		RetentionDays: 30,
-	}); err != nil {
-		t.Fatalf("create ping metric: %v", err)
-	}
-	if err := s.WriteBatch(ctx, []metric.Point{
-		{MetricName: MetricPingLatency, EntityID: "node-a", Timestamp: now.Add(-20 * time.Minute), Value: 20, Tags: map[string]string{"task_id": "7"}},
-		{MetricName: MetricPingLatency, EntityID: "node-a", Timestamp: now.Add(-10 * time.Minute), Value: 10, Tags: map[string]string{"task_id": "7"}},
-		{MetricName: MetricPingLatency, EntityID: "node-a", Timestamp: now.Add(-5 * time.Minute), Value: 5, Tags: map[string]string{"task_id": "7"}},
-	}); err != nil {
-		t.Fatalf("write ping points: %v", err)
-	}
-	if _, err := s.Compact(ctx, now); err != nil {
-		t.Fatalf("compact ping points: %v", err)
-	}
-
-	storeMu.Lock()
-	oldStore := store
-	store = s
-	storeMu.Unlock()
-	defer func() {
-		storeMu.Lock()
-		store = oldStore
-		storeMu.Unlock()
-	}()
-
-	records, err := GetPingRecords(ctx, "node-a", 7, now.Add(-30*time.Minute), now)
-	if err != nil {
-		t.Fatalf("get ping records: %v", err)
-	}
-	if len(records) != 3 {
-		t.Fatalf("expected 3 ping records across raw and rollup data, got %d: %#v", len(records), records)
-	}
-	if records[0].Value != 5 || records[1].Value != 10 || records[2].Value != 20 {
-		t.Fatalf("unexpected ping values in descending order: %#v", records)
 	}
 }
 
@@ -531,119 +478,5 @@ func TestRetentionCleanupReportsDeleteFailure(t *testing.T) {
 	}
 	if len(points) != 0 {
 		t.Fatalf("retention cleanup unexpectedly changed healthy metric data: %#v", points)
-	}
-}
-
-func TestGetRecordsByClientAndTimeReadsRollupsAfterRawCompaction(t *testing.T) {
-	ctx := context.Background()
-	s, err := metric.Open(ctx, metric.SQLite(":memory:",
-		metric.WithMaxOpenConns(1),
-		metric.WithRollupPolicy(defaultRollupPolicy()),
-	))
-	if err != nil {
-		t.Fatalf("open metric store: %v", err)
-	}
-	if err := createMetricDefinitions(ctx, s); err != nil {
-		t.Fatalf("create metric definitions: %v", err)
-	}
-
-	storeMu.Lock()
-	oldStore := store
-	store = s
-	storeMu.Unlock()
-	defer func() {
-		storeMu.Lock()
-		store = oldStore
-		storeMu.Unlock()
-		_ = s.Close()
-	}()
-
-	now := time.Now().UTC().Truncate(time.Minute)
-	ts := now.Add(-time.Hour)
-	rec := models.Record{
-		Client:         "node-a",
-		Time:           ts,
-		Cpu:            42.5,
-		Ram:            123456,
-		RamTotal:       999999,
-		Disk:           456789,
-		DiskTotal:      777777,
-		Load:           0.75,
-		Connections:    321,
-		ConnectionsUdp: 12,
-	}
-	if _, err := WriteReport(ctx, v2.Report{
-		UUID:      rec.Client,
-		UpdatedAt: ts,
-		CPU:       v2.CPUReport{Usage: float64(rec.Cpu)},
-		Ram:       v2.RamReport{Used: rec.Ram, Total: rec.RamTotal},
-		Load:      v2.LoadReport{Load1: float64(rec.Load)},
-		Disk:      v2.DiskReport{Used: rec.Disk, Total: rec.DiskTotal},
-		Process:   rec.Process,
-		Connections: v2.ConnectionsReport{
-			TCP: rec.Connections,
-			UDP: rec.ConnectionsUdp,
-		},
-	}); err != nil {
-		t.Fatalf("write record: %v", err)
-	}
-	if _, err := s.Compact(ctx, now); err != nil {
-		t.Fatalf("compact raw into rollup: %v", err)
-	}
-	got, err := GetRecordsByClientAndTime(ctx, rec.Client, ts.Add(-time.Minute), now)
-	if err != nil {
-		t.Fatalf("get records: %v", err)
-	}
-	if len(got) != 1 {
-		t.Fatalf("expected 1 reconstructed record from rollup, got %d: %#v", len(got), got)
-	}
-	if got[0].Cpu == 0 || got[0].Ram == 0 || got[0].Disk == 0 || got[0].Connections == 0 {
-		t.Fatalf("record was not reconstructed from rollup: %#v", got[0])
-	}
-
-	all, err := GetRecordsByTime(ctx, ts.Add(-time.Minute), now)
-	if err != nil {
-		t.Fatalf("get all records: %v", err)
-	}
-	if len(all) != 1 || all[0].Client != rec.Client || all[0].Cpu == 0 {
-		t.Fatalf("all-client records were not reconstructed from rollup: %#v", all)
-	}
-}
-
-func TestGetRecordMetricMaxByClientAndTimeQueriesOnlySelectedMetric(t *testing.T) {
-	ctx := context.Background()
-	s, err := metric.Open(ctx, metric.SQLite(":memory:",
-		metric.WithMaxOpenConns(1),
-		metric.WithRollupPolicy(defaultRollupPolicy()),
-	))
-	if err != nil {
-		t.Fatalf("open metric store: %v", err)
-	}
-	defer s.Close()
-	if err := createMetricDefinitions(ctx, s); err != nil {
-		t.Fatalf("create metric definitions: %v", err)
-	}
-
-	base := time.Now().UTC().Truncate(time.Minute).Add(-time.Minute)
-	if err := s.WriteBatch(ctx, []metric.Point{
-		{MetricName: MetricCPU, EntityID: "node-a", Timestamp: base.Add(10 * time.Second), Value: 10},
-		{MetricName: MetricCPU, EntityID: "node-a", Timestamp: base.Add(20 * time.Second), Value: 90},
-		{MetricName: MetricRAM, EntityID: "node-a", Timestamp: base.Add(20 * time.Second), Value: 123456},
-	}); err != nil {
-		t.Fatalf("write metric points: %v", err)
-	}
-
-	got, err := getRecordMetricMaxByClientAndTimeFromSeries(ctx, s, "node-a", "cpu", base, base.Add(time.Minute))
-	if err != nil {
-		t.Fatalf("get CPU max records: %v", err)
-	}
-	if len(got) != 1 {
-		t.Fatalf("record count = %d, want 1: %#v", len(got), got)
-	}
-	if got[0].Cpu != 90 {
-		t.Fatalf("CPU max = %v, want 90", got[0].Cpu)
-	}
-	if got[0].Ram != 0 {
-		t.Fatalf("unselected RAM value = %d, want 0", got[0].Ram)
 	}
 }

@@ -27,39 +27,22 @@ var (
 
 // refreshPostPresence 管理 HTTP POST 上报者的在线/离线状态。
 func refreshPostPresence(uuid string) {
-	refreshPostPresenceForProtocol(uuid, 2)
-}
-
-func keepAlivePostPresence(uuid string, connID int64, protocolVersion int) bool {
-	if protocolVersion < 2 {
-		return agent_runtime.KeepAliveLegacyPresence(uuid, connID, postPresenceTTL)
-	}
-	agent_runtime.KeepAlivePresence(uuid, connID, postPresenceTTL)
-	agent_runtime.MarkV2Client(uuid)
-	return true
-}
-
-func refreshPostPresenceForProtocol(uuid string, protocolVersion int) bool {
 	postPresenceMu.Lock()
 	defer postPresenceMu.Unlock()
 
 	if entry, exists := postPresenceStates[uuid]; exists {
-		if !keepAlivePostPresence(uuid, entry.connID, protocolVersion) {
-			return false
-		}
+		agent_runtime.KeepAlivePresence(uuid, entry.connID, postPresenceTTL)
 		entry.generation++
 		entry.timer.Stop()
 		gen := entry.generation
 		entry.timer = time.AfterFunc(postPresenceTTL, func() {
 			postPresenceExpired(uuid, entry.connID, gen)
 		})
-		return true
+		return
 	}
 
 	connID := time.Now().UnixNano()
-	if !keepAlivePostPresence(uuid, connID, protocolVersion) {
-		return false
-	}
+	agent_runtime.KeepAlivePresence(uuid, connID, postPresenceTTL)
 	notifierOnline(uuid, connID)
 
 	defaultGeneration := uint64(0)
@@ -68,7 +51,7 @@ func refreshPostPresenceForProtocol(uuid string, protocolVersion int) bool {
 		postPresenceExpired(uuid, connID, defaultGeneration)
 	})
 	postPresenceStates[uuid] = entry
-	return true
+	return
 }
 
 func postPresenceExpired(uuid string, connID int64, gen uint64) {
@@ -81,6 +64,6 @@ func postPresenceExpired(uuid string, connID int64, gen uint64) {
 	delete(postPresenceStates, uuid)
 	postPresenceMu.Unlock()
 
-	agent_runtime.SetPresence(uuid, connID, false)
+	agent_runtime.ClearPresence(uuid, connID)
 	notifier.OfflineNotification(uuid, connID)
 }

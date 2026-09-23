@@ -19,7 +19,6 @@ const defaultTimeout = 30 * time.Second
 
 var (
 	ErrOffline      = errors.New("agent is not connected")
-	ErrUnsupported  = errors.New("agent does not support file operations")
 	ErrTimeout      = errors.New("file operation timed out")
 	ErrUnknownToken = errors.New("unknown or expired file operation")
 
@@ -39,8 +38,8 @@ type CallOptions struct {
 // Call dispatches a metadata-only filesystem control operation. Binary file
 // data must use the HTTP transfer endpoint exposed by the transfer package.
 func Call(ctx context.Context, uuid, op string, args map[string]any, options ...CallOptions) (json.RawMessage, error) {
-	if !agent_runtime.IsV2Client(uuid) {
-		return nil, ErrUnsupported
+	if !agent_runtime.IsAgentOnline(uuid) {
+		return nil, ErrOffline
 	}
 	timeout := defaultTimeout
 	if len(options) > 0 && options[0].Timeout > 0 {

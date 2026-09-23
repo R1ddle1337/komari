@@ -1,11 +1,39 @@
 package agent
 
 import (
+	v2 "github.com/komari-monitor/komari/protocol/v2"
+	"github.com/komari-monitor/komari/web/connection"
 	"testing"
 	"time"
-
-	v2 "github.com/komari-monitor/komari/protocol/v2"
 )
+
+func TestReconnectCleanupPreservesCurrentConnectionAndHTTPPresence(t *testing.T) {
+	uuid := t.Name()
+	old := &connection.SafeConn{ID: 1}
+	current := &connection.SafeConn{ID: 2}
+	t.Cleanup(func() { DeleteConnectedClients(uuid); ClearPresence(uuid, 3) })
+	RegisterConnectedClient(uuid, old)
+	if previous := RegisterConnectedClient(uuid, current); previous != old {
+		t.Fatal("previous connection not returned")
+	}
+	DeleteClientConditionally(uuid, old)
+	if !IsCurrentClientConnection(uuid, current) || !IsAgentOnline(uuid) {
+		t.Fatal("old cleanup removed current connection")
+	}
+	KeepAlivePresence(uuid, 3, time.Minute)
+	DeleteClientConditionally(uuid, current)
+	if GetConnectedClient(uuid) != nil || !IsAgentOnline(uuid) {
+		t.Fatal("HTTP recovery presence lost")
+	}
+	ClearPresence(uuid, 1)
+	if !IsAgentOnline(uuid) {
+		t.Fatal("old presence cleanup removed current HTTP session")
+	}
+	KeepAlivePresence(uuid, 3, -time.Second)
+	if IsAgentOnline(uuid) || DispatchV2Event(uuid, v2.MethodAgentFile, v2.FileOperation{Op: "list"}) {
+		t.Fatal("expired agent accepted a command")
+	}
+}
 
 func TestRecordReportKeepsLatestAndShortRecentWindow(t *testing.T) {
 	mu.Lock()

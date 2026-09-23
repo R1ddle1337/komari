@@ -440,35 +440,6 @@ func TestReportQueueFullReturnsError(t *testing.T) {
 	}
 }
 
-func TestRecordReconstructionUsesMetricSpecificAggregation(t *testing.T) {
-	ctx := context.Background()
-	s := useReportTestStore(t, nil)
-	base := time.Now().UTC().Truncate(time.Minute)
-	entityID := "node-aggregation"
-	points := []metric.Point{
-		{MetricName: MetricCPU, EntityID: entityID, Timestamp: base.Add(time.Second), Value: 10},
-		{MetricName: MetricCPU, EntityID: entityID, Timestamp: base.Add(2 * time.Second), Value: 30},
-		{MetricName: MetricNetTotalUp, EntityID: entityID, Timestamp: base.Add(time.Second), Value: 100},
-		{MetricName: MetricNetTotalUp, EntityID: entityID, Timestamp: base.Add(2 * time.Second), Value: 200},
-		{MetricName: MetricTrafficUp, EntityID: entityID, Timestamp: base.Add(time.Second), Value: 10},
-		{MetricName: MetricTrafficUp, EntityID: entityID, Timestamp: base.Add(2 * time.Second), Value: 20},
-	}
-	if err := s.WriteBatch(ctx, points); err != nil {
-		t.Fatalf("write points: %v", err)
-	}
-
-	records, err := GetRecordsByClientAndTime(ctx, entityID, base, base.Add(time.Hour))
-	if err != nil {
-		t.Fatalf("reconstruct records: %v", err)
-	}
-	if len(records) != 1 {
-		t.Fatalf("records = %#v, want one bucket", records)
-	}
-	if records[0].Cpu != 20 || records[0].NetTotalUp != 200 || records[0].TrafficUp != 30 {
-		t.Fatalf("unexpected aggregation result: %#v", records[0])
-	}
-}
-
 func TestTrafficCounterDelta(t *testing.T) {
 	const (
 		oneGB = int64(1_000_000_000)

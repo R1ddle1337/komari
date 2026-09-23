@@ -33,7 +33,7 @@ func TestMetricPointLimitAndIntervalOverflow(t *testing.T) {
 	for _, params := range []publicMetricQueryParams{
 		{MaxPoints: maxPublicMetricPoints + 1},
 		{MaxPointsByMetric: map[string]int{"cpu.usage": math.MaxInt}},
-		{PointsByMetric: map[string]int{"cpu.usage": -1}},
+		{MaxPointsByMetric: map[string]int{"cpu.usage": -1}},
 	} {
 		if _, err := resolveMetricMaxPoints("cpu.usage", params); err == nil {
 			t.Fatal("invalid point limit accepted")

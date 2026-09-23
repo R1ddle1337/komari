@@ -220,3 +220,17 @@ func minInt(a, b int) int {
 	}
 	return b
 }
+
+func TestTDigestPreservesSeparatedPointMasses(t *testing.T) {
+	digest := NewTDigest(100)
+	low, high := NewTDigest(100), NewTDigest(100)
+	low.Add(10, 90)
+	high.Add(1000, 10)
+	digest.Merge(low)
+	digest.Merge(high)
+	for _, tc := range []struct{ q, want float64 }{{.5, 10}, {.9, 10}, {.95, 1000}, {.99, 1000}} {
+		if got := digest.Quantile(tc.q); got != tc.want {
+			t.Fatalf("q=%v got %v want %v", tc.q, got, tc.want)
+		}
+	}
+}

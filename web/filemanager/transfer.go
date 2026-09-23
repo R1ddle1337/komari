@@ -1013,8 +1013,6 @@ func respondTransferError(c *gin.Context, err error) {
 		// Preserve a proxy/body-size rejection so the browser can renegotiate
 		// the logical chunk instead of retrying the same request forever.
 		status = http.StatusRequestEntityTooLarge
-	case errors.Is(err, ErrUnsupported):
-		status = http.StatusNotImplemented
 	case isUnsupportedAgentFileOperation(err):
 		// An older Agent (or an Agent with web control disabled) cannot execute
 		// the real-time stream operation. This is a protocol/configuration
@@ -1035,7 +1033,7 @@ func respondTransferError(c *gin.Context, err error) {
 		status = http.StatusTooManyRequests
 	}
 	message := err.Error()
-	if isUnsupportedAgentFileOperation(err) || errors.Is(err, ErrUnsupported) {
+	if isUnsupportedAgentFileOperation(err) {
 		message = "Agent does not support real-time file transfer; update the Agent binary"
 	}
 	api.RespondError(c, status, message)

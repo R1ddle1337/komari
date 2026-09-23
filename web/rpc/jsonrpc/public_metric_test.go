@@ -3,13 +3,11 @@ package jsonrpc
 import (
 	"context"
 	"encoding/json"
-	"math"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/komari-monitor/komari/database/models"
 	"github.com/komari-monitor/komari/internal/metricstore"
 	"github.com/komari-monitor/komari/pkg/metric"
 	"github.com/komari-monitor/komari/pkg/rpc"
@@ -110,8 +108,8 @@ func TestPublicMetricJSONIncludesOnlyTags(t *testing.T) {
 	if strings.Contains(text, `"tag":`) {
 		t.Fatalf("legacy tag field should not be serialized: %s", text)
 	}
-	if !strings.Contains(text, `"time":"2026-06-18T00:00:00.123456789Z"`) {
-		t.Fatalf("metric time is not UTC RFC3339Nano: %s", text)
+	if !strings.Contains(text, `"point_format":"points_v1"`) || !strings.Contains(text, `1781740800123`) {
+		t.Fatalf("metric time is not canonical UTC milliseconds: %s", text)
 	}
 }
 
@@ -227,64 +225,6 @@ func TestPublicPingMetricMinusOneIsPreservedWithoutFillEmpty(t *testing.T) {
 	nonPing := publicRawMetricValue("temperature", -1, true)
 	if nonPing == nil || *nonPing != -1 {
 		t.Fatalf("negative values from non-ping metrics must be preserved, got %v", nonPing)
-	}
-}
-
-func TestPublicPingStatsFromAggregateGroupsUsesTaskNamesAndLossMetric(t *testing.T) {
-	base := time.Date(2026, 6, 18, 0, 0, 0, 0, time.UTC)
-	taskMap := map[string]models.PingTask{
-		"1": {Id: 1, Name: "Tokyo ICMP", Type: "icmp", Interval: 60},
-	}
-	groups := publicPingMetricAggregateGroups{
-		Avg: map[string][]metric.AggregatePoint{
-			"1": {
-				{Bucket: base, Count: 2, Value: 20},
-				{Bucket: base.Add(time.Minute), Count: 2, Value: 40},
-			},
-		},
-		Min: map[string][]metric.AggregatePoint{
-			"1": {{Bucket: base, Count: 4, Value: 12}},
-		},
-		Max: map[string][]metric.AggregatePoint{
-			"1": {{Bucket: base, Count: 4, Value: 92}},
-		},
-		Last: map[string][]metric.AggregatePoint{
-			"1": {{Bucket: base.Add(time.Minute), Count: 1, Value: 44}},
-		},
-		P50: map[string][]metric.AggregatePoint{
-			"1": {{Bucket: base, Count: 4, Value: 30}},
-		},
-		P99: map[string][]metric.AggregatePoint{
-			"1": {{Bucket: base, Count: 4, Value: 80}},
-		},
-		StdDev: map[string][]metric.AggregatePoint{
-			"1": {{Bucket: base, Count: 4, Value: 8}},
-		},
-		Loss: map[string][]metric.AggregatePoint{
-			"1": {{Bucket: base, Count: 4, Value: 0.25}},
-		},
-		LossAvailable: true,
-	}
-
-	stats := publicPingStatsFromAggregateGroups("node-a", groups, taskMap, nil)
-	if len(stats) != 1 {
-		t.Fatalf("expected one stat, got %#v", stats)
-	}
-	got := stats[0]
-	if got.Name != "Tokyo ICMP" || got.Type != "icmp" || got.Interval != 60 {
-		t.Fatalf("task metadata not applied: %#v", got)
-	}
-	if got.Total != 4 || got.Valid != 3 {
-		t.Fatalf("unexpected totals: %#v", got)
-	}
-	if got.Loss != 25 || got.LossApproximate {
-		t.Fatalf("loss should come from ping.loss metric: %#v", got)
-	}
-	if got.Min == nil || *got.Min != 12 || got.Max == nil || *got.Max != 92 || got.Avg == nil || *got.Avg != 30 {
-		t.Fatalf("latency stats mismatch: %#v", got)
-	}
-	if math.Abs(got.P99P50Ratio-1.6666666666666667) > 0.000001 {
-		t.Fatalf("unexpected volatility ratio: %#v", got)
 	}
 }
 

@@ -16,6 +16,8 @@ var backupWhitelist = []string{
 	"font.ttf",
 	"theme/",
 	"plugin/",
+	"plugin-data/",
+	// Keep the historical misspelling for backups from older installations.
 	"plguin-data/",
 	"metrics.db",
 }

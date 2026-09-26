@@ -29,7 +29,8 @@ func EstablishConnection(c *gin.Context) {
 		closeSession(session_id)
 		return
 	}
-	_, ok := attachAgent(session_id, conn)
+	conn.SetReadLimit(1 << 20)
+	_, ok := attachAgent(session_id, conn, api.NewCredentialValidator(c))
 	if !ok {
 		conn.Close()
 		return

@@ -59,9 +59,11 @@ func RequestTerminal(c *gin.Context) {
 	if err != nil {
 		return
 	}
+	conn.SetReadLimit(1 << 20)
+	credentialsValid := api.NewCredentialValidator(c)
 
 	if id != "" {
-		session, ok := attachBrowser(id, userID, isAPIKey, conn)
+		session, ok := attachBrowser(id, userID, isAPIKey, conn, credentialsValid)
 		if !ok || session.UUID != uuid {
 			conn.WriteMessage(1, []byte("Terminal session expired\n终端会话已过期\n"))
 			conn.Close()
@@ -88,11 +90,12 @@ func RequestTerminal(c *gin.Context) {
 	// 新建一个终端连接
 	id = utils.GenerateRandomString(32)
 	session := &TerminalSession{
-		UserUUID:    userID,
-		UUID:        uuid,
-		Browser:     conn,
-		Agent:       nil,
-		RequesterIp: c.ClientIP(),
+		UserUUID:                userID,
+		UUID:                    uuid,
+		Browser:                 conn,
+		Agent:                   nil,
+		RequesterIp:             c.ClientIP(),
+		BrowserCredentialsValid: credentialsValid,
 	}
 
 	TerminalSessionsMutex.Lock()

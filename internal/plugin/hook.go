@@ -441,6 +441,8 @@ func (b *bufferedResponseWriter) passedThrough() bool {
 
 func (b *bufferedResponseWriter) Header() http.Header { return b.header }
 
+func (b *bufferedResponseWriter) Unwrap() http.ResponseWriter { return b.underlying }
+
 func (b *bufferedResponseWriter) WriteHeader(code int) {
 	b.mu.Lock()
 	if b.streaming {

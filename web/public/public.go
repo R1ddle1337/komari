@@ -14,6 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/komari-monitor/komari/internal/config"
+	"github.com/komari-monitor/komari/utils"
 )
 
 //go:embed defaultTheme/komari-theme.json
@@ -376,15 +377,7 @@ func static(r *gin.RouterGroup, noRoute func(handlers ...gin.HandlerFunc), force
 			}
 			expireSeconds := int(tempKeyExpireTime - now)
 			if expireSeconds > 0 {
-				c.SetCookie(
-					"temp_key",    // key
-					tempKey,       // value
-					expireSeconds, // maxAge（秒）
-					"/",           // path
-					"",            // domain
-					false,         // secure
-					false,         // httpOnly
-				)
+				utils.SetAuthCookie(c, "temp_key", tempKey, expireSeconds, http.SameSiteLaxMode)
 			}
 		}()
 		reqPath := c.Request.URL.Path

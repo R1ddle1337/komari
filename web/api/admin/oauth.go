@@ -3,7 +3,9 @@ package admin
 import (
 	"github.com/gin-gonic/gin"
 	"github.com/komari-monitor/komari/database/accounts"
+	"github.com/komari-monitor/komari/utils"
 	"github.com/komari-monitor/komari/web/api"
+	"net/http"
 )
 
 // oauth.go
@@ -17,7 +19,7 @@ func BindingExternalAccount(c *gin.Context) {
 		api.RespondError(c, 500, "No user found: "+err.Error())
 		return
 	}
-	c.SetCookie("binding_external_account", user.UUID, 3600, "/", "", false, true)
+	utils.SetAuthCookie(c, "binding_external_account", user.UUID, 3600, http.SameSiteLaxMode)
 	c.Redirect(302, "/api/oauth")
 }
 

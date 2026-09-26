@@ -1,6 +1,14 @@
 package utils
 
-import "github.com/gin-gonic/gin"
+import (
+	"github.com/gin-gonic/gin"
+	"net/http"
+)
+
+func SetAuthCookie(c *gin.Context, name, value string, maxAge int, sameSite http.SameSite) {
+	http.SetCookie(c.Writer, &http.Cookie{Name: name, Value: value, Path: "/", MaxAge: maxAge,
+		Secure: GetScheme(c) == "https", HttpOnly: true, SameSite: sameSite})
+}
 
 // https://github.com/labstack/echo/blob/98ca08e7dd64075b858e758d6693bf9799340756/context.go#L275-L294
 func GetScheme(c *gin.Context) string {
@@ -9,17 +17,15 @@ func GetScheme(c *gin.Context) string {
 	if c.Request.TLS != nil {
 		return "https"
 	}
-	if scheme := c.Request.Header.Get("X-Forwarded-Proto"); scheme != "" {
-		return scheme
-	}
-	if scheme := c.Request.Header.Get("X-Forwarded-Protocol"); scheme != "" {
-		return scheme
-	}
-	if ssl := c.Request.Header.Get("X-Forwarded-Ssl"); ssl == "on" {
-		return "https"
-	}
-	if scheme := c.Request.Header.Get("X-Url-Scheme"); scheme != "" {
-		return scheme
+	if isTrustedProxy(c.Request.RemoteAddr) {
+		for _, header := range []string{"X-Forwarded-Proto", "X-Forwarded-Protocol", "X-Url-Scheme"} {
+			if scheme := c.GetHeader(header); scheme == "http" || scheme == "https" {
+				return scheme
+			}
+		}
+		if c.GetHeader("X-Forwarded-Ssl") == "on" {
+			return "https"
+		}
 	}
 	return "http"
 }

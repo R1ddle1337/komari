@@ -2,6 +2,7 @@ package public
 
 import (
 	"fmt"
+	"net/http"
 	"slices"
 
 	"github.com/gin-gonic/gin"
@@ -22,7 +23,7 @@ func OAuth(c *gin.Context) {
 
 	authURL, state := oauth.CurrentProvider().GetAuthorizationURL(utils.GetCallbackURL(c))
 
-	c.SetCookie("oauth_state", state, 3600, "/", "", false, true)
+	utils.SetAuthCookie(c, "oauth_state", state, 3600, http.SameSiteLaxMode)
 
 	c.Redirect(302, authURL)
 }
@@ -32,7 +33,7 @@ func OAuthCallback(c *gin.Context) {
 
 	// 验证state防止CSRF攻击
 	state, _ := c.Cookie("oauth_state")
-	c.SetCookie("oauth_state", "", -1, "/", "", false, true)
+	utils.SetAuthCookie(c, "oauth_state", "", -1, http.SameSiteLaxMode)
 
 	// 获取当前OAuth提供商名称
 	providerName := oauth.CurrentProvider().GetName()
@@ -71,7 +72,7 @@ func OAuthCallback(c *gin.Context) {
 	// 如果cookie中有binding_external_account，说明是绑定外部账号
 	// 否则是登录
 	uuid, _ := c.Cookie("binding_external_account")
-	c.SetCookie("binding_external_account", "", -1, "/", "", false, true)
+	utils.SetAuthCookie(c, "binding_external_account", "", -1, http.SameSiteLaxMode)
 	if uuid != "" {
 		// 绑定外部账号
 		session, _ := c.Cookie("session_token")

@@ -1,6 +1,7 @@
 package accounts
 
 import (
+	"errors"
 	"image"
 
 	"github.com/komari-monitor/komari/database/dbcore"
@@ -9,7 +10,8 @@ import (
 )
 
 var (
-	TwoFactorIssuer = "Komari Monitor"
+	TwoFactorIssuer            = "Komari Monitor"
+	ErrTwoFactorAlreadyEnabled = errors.New("2FA is already enabled; disable it with the current code before setting a new secret")
 )
 
 func Generate2Fa() (string, image.Image, error) {
@@ -29,7 +31,16 @@ func Generate2Fa() (string, image.Image, error) {
 
 func Enable2Fa(uuid, secret string) error {
 	db := dbcore.GetDBInstance()
-	return db.Model(&models.User{}).Where("uuid = ?", uuid).Update("two_factor", secret).Error
+	// Check and write atomically: concurrent setup requests must never replace
+	// an existing factor without verifying that factor first.
+	result := db.Model(&models.User{}).Where("uuid = ? AND (two_factor = ? OR two_factor IS NULL)", uuid, "").Update("two_factor", secret)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrTwoFactorAlreadyEnabled
+	}
+	return nil
 }
 
 func Verify2Fa(uuid, code string) (bool, error) {

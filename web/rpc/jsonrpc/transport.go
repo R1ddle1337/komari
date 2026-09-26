@@ -102,6 +102,7 @@ func serveWebSocket(c *gin.Context) {
 	conn.SetReadLimit(maxRPCRequestBytes)
 
 	meta := buildContextMeta(c)
+	credentialsValid := api.NewCredentialValidator(c)
 	for {
 		var req rpc.JsonRpcRequest
 		if err := conn.ReadJSON(&req); err != nil {
@@ -118,8 +119,15 @@ func serveWebSocket(c *gin.Context) {
 			conn.WriteJSON(jerr.ResponseWithID(req.ID))
 			continue
 		}
+		if !credentialsValid() {
+			conn.WriteJSON(rpc.ErrorResponse(req.ID, rpc.PermissionDenied, "Credentials expired or revoked", nil))
+			return
+		}
+		meta.TempShareValid = hasTempShareAccess(c)
 		// 同步写：SafeConn 内部有锁，串行写避免响应乱序与并发竞态。
-		conn.WriteJSON(dispatchWithSensitive(context.Background(), c, meta, &req))
+		if err := conn.WriteJSON(dispatchWithSensitive(c.Request.Context(), c, meta, &req)); err != nil {
+			return
+		}
 	}
 }
 
@@ -145,6 +153,7 @@ func servePost(c *gin.Context) {
 		return
 	}
 	meta := buildContextMeta(c)
+	credentialsValid := api.NewCredentialValidator(c)
 
 	batch := bytes.HasPrefix(bytes.TrimSpace(body), []byte("["))
 	c.Header("Content-Type", "application/json; charset=utf-8")
@@ -166,7 +175,14 @@ func servePost(c *gin.Context) {
 		}
 		// Encode each response before dispatching the next request. Keeping a
 		// batch's entire history payloads alive can multiply memory by 100.
-		if err := encoder.Encode(dispatchWithSensitive(c.Request.Context(), c, meta, rreq)); err != nil {
+		var response *rpc.JsonRpcResponse
+		if !credentialsValid() {
+			response = rpc.ErrorResponse(rreq.ID, rpc.PermissionDenied, "Credentials expired or revoked", nil)
+		} else {
+			meta.TempShareValid = hasTempShareAccess(c)
+			response = dispatchWithSensitive(c.Request.Context(), c, meta, rreq)
+		}
+		if err := encoder.Encode(response); err != nil {
 			return
 		}
 	}
@@ -206,7 +222,9 @@ func buildContextMeta(c *gin.Context) *rpc.ContextMeta {
 		meta.ClientUUID = p.ClientUUID
 		// 尝试提取 client token(用于某些 handler 需要原始 token 的场景)。
 		// 优先查询参数 ?Authorization=<token>，再尝试 Bearer header。
-		if token := c.Query("Authorization"); token != "" {
+		if token := c.Query("token"); token != "" {
+			meta.ClientToken = token
+		} else if token := c.Query("Authorization"); token != "" {
 			meta.ClientToken = token
 		} else if auth := c.GetHeader("Authorization"); auth != "" && len(auth) > len("Bearer ") {
 			meta.ClientToken = auth[len("Bearer "):]

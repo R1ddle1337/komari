@@ -1,8 +1,6 @@
 package accounts
 
 import (
-	"crypto/sha256"
-	"encoding/base64"
 	"fmt"
 	"time"
 
@@ -12,45 +10,74 @@ import (
 	"gorm.io/gorm"
 )
 
-const constantSalt = "06Wm4Jv1Hkxx"
-
 // CheckPassword 检查密码是否正确
 //
 // 如果密码正确，返回用户的 UUID 和 true；否则返回空字符串和 false
 func CheckPassword(username, passwd string) (uuid string, success bool) {
+	uuid, _, success = CheckPasswordWithProof(username, passwd)
+	return uuid, success
+}
+
+// CheckPasswordWithProof returns the exact stored hash that was verified. A
+// password login must pass it to CreatePasswordSession, which rejects a proof
+// made stale by a concurrent password reset. The proof must stay server-side.
+func CheckPasswordWithProof(username, passwd string) (uuid, passwordProof string, success bool) {
 	db := dbcore.GetDBInstance()
 	var user models.User
 	result := db.Where("username = ?", username).First(&user)
 	if result.Error != nil {
-		// 静默处理错误，不显示日志
-		return "", false
+		// Keep unknown usernames on the same expensive verification path.
+		passwordWork(passwd, make([]byte, passwordSaltBytes))
+		return "", "", false
 	}
-	if hashPasswd(passwd) != user.Passwd {
-		return "", false
+	valid, legacy := verifyPassword(passwd, user.Passwd)
+	if !valid {
+		return "", "", false
 	}
-	return user.UUID, true
+	if legacy {
+		hashed, err := hashPassword(passwd)
+		if err != nil {
+			return "", "", false
+		}
+		// Do not overwrite a concurrent password reset, or authenticate against
+		// the old password after that reset won the race.
+		updated := db.Model(&models.User{}).Where("uuid = ? AND passwd = ?", user.UUID, user.Passwd).Update("passwd", hashed)
+		if updated.Error != nil {
+			return "", "", false
+		}
+		if updated.RowsAffected == 0 {
+			var current models.User
+			if db.Where("uuid = ?", user.UUID).First(&current).Error != nil {
+				return "", "", false
+			}
+			if valid, _ := verifyPassword(passwd, current.Passwd); !valid {
+				return "", "", false
+			}
+			user.Passwd = current.Passwd
+		} else {
+			user.Passwd = hashed
+		}
+	}
+	return user.UUID, user.Passwd, true
 }
 
 // ForceResetPassword 强制重置用户密码
 func ForceResetPassword(username, passwd string) (err error) {
 	db := dbcore.GetDBInstance()
-	result := db.Model(&models.User{}).Where("username = ?", username).Update("passwd", hashPasswd(passwd))
-	if result.Error != nil {
-		return result.Error
+	hashed, err := hashPassword(passwd)
+	if err != nil {
+		return err
 	}
-	if result.RowsAffected == 0 {
-		return fmt.Errorf("无法找到用户名")
-	}
-	return nil
-}
-
-// hashPasswd 对密码进行加盐哈希
-func hashPasswd(passwd string) string {
-	saltedPassword := passwd + constantSalt
-	hash := sha256.New()
-	hash.Write([]byte(saltedPassword))
-	hashedPassword := base64.StdEncoding.EncodeToString(hash.Sum(nil))
-	return hashedPassword
+	return db.Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&models.User{}).Where("username = ?", username).Update("passwd", hashed)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return fmt.Errorf("无法找到用户名")
+		}
+		return tx.Where("1 = 1").Delete(&models.Session{}).Error
+	})
 }
 
 func CreateAccount(username, passwd string) (user models.User, err error) {
@@ -58,7 +85,10 @@ func CreateAccount(username, passwd string) (user models.User, err error) {
 }
 
 func CreateAccountWithDB(db *gorm.DB, username, passwd string) (user models.User, err error) {
-	hashedPassword := hashPasswd(passwd)
+	hashedPassword, err := hashPassword(passwd)
+	if err != nil {
+		return models.User{}, err
+	}
 	user = models.User{
 		UUID:     uuid.New().String(),
 		Username: username,
@@ -126,29 +156,32 @@ func UnbindExternalAccount(uuid string) error {
 
 func UpdateUser(uuid string, name, password, sso_type *string) error {
 	db := dbcore.GetDBInstance()
-	// Check if user exists
-	var existingUser models.User
-	result := db.Where("uuid = ?", uuid).First(&existingUser)
-	if result.Error != nil {
-		return fmt.Errorf("user not found: %s", uuid)
-	}
 	updates := make(map[string]interface{})
 	if name != nil {
 		updates["username"] = *name
 	}
 	if password != nil {
-		updates["passwd"] = hashPasswd(*password)
+		hashed, err := hashPassword(*password)
+		if err != nil {
+			return err
+		}
+		updates["passwd"] = hashed
 	}
 	if sso_type != nil {
 		updates["sso_type"] = *sso_type
 	}
 	updates["updated_at"] = time.Now().UTC()
-	err := db.Model(&models.User{}).Where("uuid = ?", uuid).Updates(updates).Error
-	if err != nil {
-		return err
-	}
-	if password != nil {
-		DeleteAllSessions()
-	}
-	return nil
+	return db.Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&models.User{}).Where("uuid = ?", uuid).Updates(updates)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return fmt.Errorf("user not found: %s", uuid)
+		}
+		if password != nil {
+			return tx.Where("1 = 1").Delete(&models.Session{}).Error
+		}
+		return nil
+	})
 }

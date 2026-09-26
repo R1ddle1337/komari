@@ -15,6 +15,8 @@ import (
 	"github.com/komari-monitor/komari/utils/messageSender"
 )
 
+var ErrCredentialsChanged = errors.New("credentials changed; please log in again")
+
 // GetAllSessions 获取所有会话
 func GetAllSessions() (sessions []models.Session, err error) {
 	db := dbcore.GetDBInstance()
@@ -39,6 +41,39 @@ func CreateSession(uuid string, expires int, userAgent, ip, login_method string)
 		LoginMethod:  login_method,
 		LatestOnline: time.Now().UTC(),
 	}
+	err := db.Create(&sessionRecord).Error
+	if err != nil {
+		return "", err
+	}
+	notifySessionCreated(userAgent, ip, login_method)
+	return session, nil
+}
+
+// CreatePasswordSession makes password verification and session creation agree
+// even when a password reset commits between them. The conditional INSERT is a
+// single database statement; password changes revoke sessions in the same
+// transaction as their update, so neither ordering can leave an old login live.
+func CreatePasswordSession(uuid, passwordProof string, expires int, userAgent, ip string) (string, error) {
+	if uuid == "" || passwordProof == "" {
+		return "", ErrCredentialsChanged
+	}
+	session := utils.GenerateRandomString(32)
+	now := time.Now().UTC()
+	result := dbcore.GetDBInstance().Exec(`INSERT INTO sessions
+		(uuid, session, expires, user_agent, ip, login_method, latest_online, created_at)
+		SELECT uuid, ?, ?, ?, ?, ?, ?, ? FROM users WHERE uuid = ? AND passwd = ?`,
+		session, now.Add(time.Duration(expires)*time.Second), userAgent, ip, "password", now, now, uuid, passwordProof)
+	if result.Error != nil {
+		return "", result.Error
+	}
+	if result.RowsAffected != 1 {
+		return "", ErrCredentialsChanged
+	}
+	notifySessionCreated(userAgent, ip, "password")
+	return session, nil
+}
+
+func notifySessionCreated(userAgent, ip, loginMethod string) {
 	go func() {
 		LoginNotification, _ := config.GetAs[bool](config.LoginNotificationKey, false)
 		if LoginNotification {
@@ -51,24 +86,21 @@ func CreateSession(uuid string, expires int, userAgent, ip, login_method string)
 			_ = messageSender.SendNotification(models.EventMessage{
 				Event:   messageevent.Login,
 				Time:    time.Now().UTC(),
-				Message: fmt.Sprintf("%s: %s (%s)\n%s", login_method, ip, loc, userAgent),
+				Message: fmt.Sprintf("%s: %s (%s)\n%s", loginMethod, ip, loc, userAgent),
 				Emoji:   "🔑",
 			})
 		}
 	}()
-
-	err := db.Create(&sessionRecord).Error
-	if err != nil {
-		return "", err
-	}
-	return session, nil
 }
 
 // GetSession 根据会话 ID 获取 UUID
 func GetSession(session string) (uuid string, err error) {
 	db := dbcore.GetDBInstance()
 	var sessionRecord models.Session
-	err = db.Where("session = ?", session).First(&sessionRecord).Error
+	// Imported/legacy databases may contain orphan sessions even when newer
+	// schemas cascade account deletion. Authentication requires a live owner.
+	err = db.Select("sessions.*").Joins("JOIN users ON users.uuid = sessions.uuid").
+		Where("sessions.session = ?", session).First(&sessionRecord).Error
 	if err != nil {
 		return "", err
 	}
@@ -83,13 +115,11 @@ func GetSession(session string) (uuid string, err error) {
 }
 
 func GetUserBySession(session string) (models.User, error) {
-	db := dbcore.GetDBInstance()
-	var sessionRecord models.Session
-	err := db.Where("session = ?", session).First(&sessionRecord).Error
+	uuid, err := GetSession(session)
 	if err != nil {
 		return models.User{}, err
 	}
-	return GetUserByUUID(sessionRecord.UUID)
+	return GetUserByUUID(uuid)
 }
 
 // DeleteSession 删除指定会话

@@ -172,6 +172,7 @@ func WebSocketV2RPC(c *gin.Context) {
 	}
 	defer conn.Close()
 	conn.SetReadLimit(maxAgentRequestBytes)
+	credentialsValid := api.NewCredentialValidator(c)
 
 	uuid, ok := clientUUIDFromContext(c)
 	if !ok {
@@ -206,6 +207,10 @@ func WebSocketV2RPC(c *gin.Context) {
 			continue
 		}
 		if !agent_runtime.IsCurrentClientConnection(uuid, conn) {
+			return
+		}
+		if !credentialsValid() {
+			conn.WriteJSON(v2.Error(req.ID, -32001, "credentials expired or revoked", nil))
 			return
 		}
 		resp := handleV2RPC(uuid, req, false)

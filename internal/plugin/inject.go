@@ -108,6 +108,8 @@ func newHTMLInjectWriter(w http.ResponseWriter) *htmlInjectWriter {
 
 func (w *htmlInjectWriter) Header() http.Header { return w.header }
 
+func (w *htmlInjectWriter) Unwrap() http.ResponseWriter { return w.underlying }
+
 func (w *htmlInjectWriter) WriteHeader(code int) {
 	w.mu.Lock()
 	if w.streaming {

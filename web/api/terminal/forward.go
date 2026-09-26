@@ -2,6 +2,7 @@ package terminal
 
 import (
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -17,23 +18,65 @@ func ForwardTerminal(id string, browser, agent *connection.SafeConn) {
 	TerminalSessionsMutex.Lock()
 	session := TerminalSessions[id]
 	requesterIp, userUUID := "", ""
+	var browserCredentialsValid, agentCredentialsValid func() bool
 	if session != nil && session.Browser == browser && session.Agent == agent {
 		requesterIp, userUUID = session.RequesterIp, session.UserUUID
+		browserCredentialsValid, agentCredentialsValid = session.BrowserCredentialsValid, session.AgentCredentialsValid
 	}
 	TerminalSessionsMutex.Unlock()
 	if requesterIp == "" {
 		return
 	}
+	credentialsValid := func() bool {
+		return browserCredentialsValid != nil && agentCredentialsValid != nil &&
+			browserCredentialsValid() && agentCredentialsValid()
+	}
+	closeCurrentSession := func() { closeSessionIfCurrent(id, browser, agent) }
+	if !credentialsValid() {
+		closeCurrentSession()
+		return
+	}
 
 	auditlog.Log(requesterIp, userUUID, "established, terminal id:"+id, "terminal")
 	established_time := time.Now()
-	errChan := make(chan error, 1)
+	errChan := make(chan error, 2)
+	done := make(chan struct{})
+	defer close(done)
+	reportError := func(err error) {
+		select {
+		case errChan <- err:
+		case <-done:
+		}
+	}
+	// Also close idle/output-only terminals promptly when their login session,
+	// API key, or agent token is revoked. Input is revalidated before forwarding.
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				if !credentialsValid() {
+					closeCurrentSession()
+					reportError(errors.New("terminal credentials expired or revoked"))
+					return
+				}
+			}
+		}
+	}()
 
 	go func() {
 		for {
 			messageType, data, err := browser.ReadMessage()
 			if err != nil {
-				errChan <- err
+				reportError(err)
+				return
+			}
+			if !credentialsValid() {
+				closeCurrentSession()
+				reportError(errors.New("terminal credentials expired or revoked"))
 				return
 			}
 
@@ -47,8 +90,8 @@ func ForwardTerminal(id string, browser, agent *connection.SafeConn) {
 					}
 					if control.Type == "close" {
 						_ = agent.WriteJSON(gin.H{"type": "close"})
-						closeSession(id)
-						errChan <- nil
+						closeCurrentSession()
+						reportError(nil)
 						return
 					}
 				}
@@ -62,7 +105,7 @@ func ForwardTerminal(id string, browser, agent *connection.SafeConn) {
 			}
 
 			if err != nil {
-				errChan <- err
+				reportError(err)
 				return
 			}
 		}
@@ -72,12 +115,12 @@ func ForwardTerminal(id string, browser, agent *connection.SafeConn) {
 		for {
 			_, data, err := agent.ReadMessage()
 			if err != nil {
-				errChan <- err
+				reportError(err)
 				return
 			}
 			err = browser.WriteMessage(websocket.BinaryMessage, data)
 			if err != nil {
-				errChan <- err
+				reportError(err)
 				return
 			}
 		}

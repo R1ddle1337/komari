@@ -79,8 +79,8 @@ func (c *reportSQLiteConnector) Driver() driver.Driver {
 	return c.driver
 }
 
-// useReportCounterFailureStore denies exactly two rollup reads after schema
-// setup, exercising failed counter restoration while leaving writes usable.
+// useReportCounterFailureStore can deny rollup reads after schema setup,
+// exercising failed counter restoration while leaving writes usable.
 func useReportCounterFailureStore(t *testing.T) (*metric.Store, *reportCounterFault) {
 	t.Helper()
 	fault := &reportCounterFault{}
@@ -107,7 +107,6 @@ func useReportCounterFailureStore(t *testing.T) (*metric.Store, *reportCounterFa
 		_ = db.Close()
 		t.Fatalf("create metric definitions: %v", err)
 	}
-	fault.remaining.Store(2)
 	storeMu.Lock()
 	previous := store
 	store = s
@@ -123,10 +122,19 @@ func useReportCounterFailureStore(t *testing.T) (*metric.Store, *reportCounterFa
 	return s, fault
 }
 
-func TestReportBatchCounterRestoreFailureInitializesStateOnce(t *testing.T) {
+func TestReportBatchCounterRestoreFailureRetriesWithoutLosingTraffic(t *testing.T) {
 	s, fault := useReportCounterFailureStore(t)
 	ctx := context.Background()
 	base := time.Now().UTC().Truncate(time.Second)
+	// Persist an earlier baseline outside the raw window, as on server restart.
+	historical := base.Add(-11 * time.Minute)
+	if err := s.WriteBatch(ctx, []metric.Point{
+		{MetricName: MetricNetTotalUp, EntityID: "counter-restore-failure", Timestamp: historical, Value: 80},
+		{MetricName: MetricNetTotalDown, EntityID: "counter-restore-failure", Timestamp: historical, Value: 150},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fault.remaining.Store(2)
 	first := v2.Report{
 		UUID:      "counter-restore-failure",
 		UpdatedAt: base,
@@ -134,22 +142,27 @@ func TestReportBatchCounterRestoreFailureInitializesStateOnce(t *testing.T) {
 		Network:   v2.NetworkReport{TotalUp: 100, TotalDown: 200},
 	}
 
-	if _, err := writeReportBatch(ctx, []v2.Report{first}); err != nil {
-		t.Fatalf("write first report after counter restore failure: %v", err)
+	for range 2 {
+		if saved, err := writeReportBatch(ctx, []v2.Report{first}); err == nil || len(saved) != 0 {
+			t.Fatalf("counter restore failure accepted report: saved=%#v, err=%v", saved, err)
+		}
 	}
 	if fault.denied.Load() != 2 {
 		t.Fatalf("counter restore queries = %d, want 2", fault.denied.Load())
 	}
 	stateValue, ok := reportTrafficStates.Load(first.UUID)
 	if !ok {
-		t.Fatal("report traffic state was not persisted")
+		t.Fatal("report traffic state was not allocated")
 	}
 	state := stateValue.(*reportTrafficState)
 	state.mu.Lock()
 	initialized := state.initialized
 	state.mu.Unlock()
-	if !initialized {
-		t.Fatal("report traffic state was not initialized after restore failure")
+	if initialized {
+		t.Fatal("failed counter restoration was cached as a complete baseline")
+	}
+	if _, err := writeReportBatch(ctx, []v2.Report{first}); err != nil {
+		t.Fatalf("retry first report after counter restoration recovers: %v", err)
 	}
 
 	second := first
@@ -162,8 +175,8 @@ func TestReportBatchCounterRestoreFailureInitializesStateOnce(t *testing.T) {
 	if fault.denied.Load() != 2 {
 		t.Fatalf("counter restore queries after second batch = %d, want no repeat", fault.denied.Load())
 	}
-	assertMetricValues(t, s, MetricTrafficUp, first.UUID, base.Add(-time.Second), base.Add(2*time.Second), []float64{0, 50})
-	assertMetricValues(t, s, MetricTrafficDown, first.UUID, base.Add(-time.Second), base.Add(2*time.Second), []float64{0, 60})
+	assertMetricValues(t, s, MetricTrafficUp, first.UUID, base.Add(-time.Second), base.Add(2*time.Second), []float64{20, 50})
+	assertMetricValues(t, s, MetricTrafficDown, first.UUID, base.Add(-time.Second), base.Add(2*time.Second), []float64{50, 60})
 }
 
 func TestWriteReportStoresMinuteMetricsAndResetAwareTraffic(t *testing.T) {

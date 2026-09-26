@@ -12,6 +12,7 @@ import (
 	"github.com/komari-monitor/komari/database/models"
 	"github.com/komari-monitor/komari/pkg/metric"
 	v2 "github.com/komari-monitor/komari/protocol/v2"
+	"golang.org/x/sync/semaphore"
 )
 
 type reportTrafficState struct {
@@ -30,6 +31,10 @@ type reportTrafficValues struct {
 }
 
 var reportTrafficStates sync.Map
+
+// Serialize counter preparation through acceptance, including direct writes
+// made when the batcher is not running. Waiting honors the caller's deadline.
+var reportWrites = semaphore.NewWeighted(1)
 
 const (
 	reportBatchInterval     = 3 * time.Second
@@ -82,7 +87,9 @@ func StartReportBatcher() {
 	go worker.run()
 }
 
-// StopReportBatcher stops the report writer after flushing all queued reports.
+// StopReportBatcher rejects new reports and drains all accepted input. If a
+// flush fails, it returns the error and keeps the stopped intake and pending
+// data available for ticker retries and a later StopReportBatcher call.
 func StopReportBatcher(ctx context.Context) error {
 	reportBatcherMu.Lock()
 	worker := reportBatcher
@@ -98,21 +105,31 @@ func StopReportBatcher(ctx context.Context) error {
 	request := reportBatchRequest{ctx: ctx, done: make(chan error, 1), stop: true}
 	select {
 	case worker.requests <- request:
+	case <-worker.done:
+		return finishReportBatcherStop(worker)
 	case <-ctx.Done():
 		return ctx.Err()
 	}
 	select {
 	case err := <-request.done:
-		<-worker.done
-		reportBatcherMu.Lock()
-		if reportBatcher == worker {
-			reportBatcher = nil
+		if err != nil {
+			return err
 		}
-		reportBatcherMu.Unlock()
-		return err
+		return finishReportBatcherStop(worker)
+	case <-worker.done:
+		return finishReportBatcherStop(worker)
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+func finishReportBatcherStop(worker *reportBatchWorker) error {
+	reportBatcherMu.Lock()
+	defer reportBatcherMu.Unlock()
+	if reportBatcher == worker {
+		reportBatcher = nil
+	}
+	return nil
 }
 
 // FlushReportBatch synchronously flushes the current queue. It is useful for
@@ -142,6 +159,8 @@ func FlushReportBatch(ctx context.Context) error {
 	select {
 	case err := <-request.done:
 		return err
+	case <-worker.done:
+		return ErrReportBatchStopped
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -174,7 +193,10 @@ func WriteReport(ctx context.Context, report v2.Report) (v2.Report, error) {
 
 	saved, err := writeReportBatch(ctx, []v2.Report{report})
 	if err != nil {
-		return v2.Report{}, err
+		if len(saved) == 0 {
+			return v2.Report{}, err
+		}
+		logger.Errorf("metricstore", "report accepted; rollup persistence will retry: %v", err)
 	}
 	return saved[0], nil
 }
@@ -205,30 +227,42 @@ func (w *reportBatchWorker) run() {
 	for {
 		select {
 		case request := <-w.requests:
-			pending = append(pending, drainReportQueue(w.queue, reportBatchQueueSize)...)
-			pendingPings = append(pendingPings, drainPingQueue(w.pingQueue, reportBatchQueueSize)...)
-			err := errors.Join(
-				writePendingReports(request.ctx, &pending),
-				writePendingPingRecords(request.ctx, &pendingPings),
-			)
-			if request.stop {
-				if err != nil {
-					logger.Errorf("metricstore", "failed to flush metric report batch during shutdown: %v", err)
-				}
+			err := w.flush(request.ctx, &pending, &pendingPings)
+			if request.stop && err == nil {
 				close(w.done)
 				request.done <- err
 				return
 			}
 			request.done <- err
 		case <-ticker.C:
-			pendingPings = append(pendingPings, drainPingQueue(w.pingQueue, reportBatchQueueSize)...)
-			if err := writePendingPingRecords(context.Background(), &pendingPings); err != nil {
-				logger.Errorf("metricstore", "failed to flush ping batch: %v", err)
-			}
-			pending = append(pending, drainReportQueue(w.queue, reportBatchQueueSize)...)
-			if err := writePendingReports(context.Background(), &pending); err != nil {
+			if err := w.flush(context.Background(), &pending, &pendingPings); err != nil {
 				logger.Errorf("metricstore", "failed to flush metric report batch: %v", err)
 			}
+		}
+	}
+}
+
+func (w *reportBatchWorker) flush(ctx context.Context, pending *[]v2.Report, pendingPings *[]models.PingRecord) error {
+	// Snapshot the queues so active producers cannot keep a flush running
+	// indefinitely. Retry retained input before draining additional reports;
+	// each pending slice and its intake queue remain bounded independently.
+	reportsLeft, pingsLeft := len(w.queue), len(w.pingQueue)
+	var reportErr, pingErr error
+	for {
+		if reportErr == nil {
+			take := min(reportsLeft, reportBatchQueueSize-len(*pending))
+			*pending = append(*pending, drainReportQueue(w.queue, take)...)
+			reportsLeft -= take
+			reportErr = writePendingReports(ctx, pending)
+		}
+		if pingErr == nil {
+			take := min(pingsLeft, reportBatchQueueSize-len(*pendingPings))
+			*pendingPings = append(*pendingPings, drainPingQueue(w.pingQueue, take)...)
+			pingsLeft -= take
+			pingErr = writePendingPingRecords(ctx, pendingPings)
+		}
+		if (reportErr != nil || reportsLeft == 0) && (pingErr != nil || pingsLeft == 0) {
+			return errors.Join(reportErr, pingErr)
 		}
 	}
 }
@@ -300,18 +334,21 @@ func writePendingReports(ctx context.Context, pending *[]v2.Report) error {
 	if len(*pending) == 0 {
 		return nil
 	}
-	batchSize := len(*pending)
 	for len(*pending) > 0 {
-		if batchSize > len(*pending) {
-			batchSize = len(*pending)
-		}
+		batchSize := min(len(*pending), reportBatchQueueSize)
 		writeCtx, cancel := context.WithTimeout(ctx, reportBatchWriteTimeout)
-		_, err := writeReportBatch(writeCtx, (*pending)[:batchSize])
+		saved, err := writeReportBatch(writeCtx, (*pending)[:batchSize])
 		cancel()
+		if len(saved) > 0 {
+			clear((*pending)[:batchSize])
+			*pending = (*pending)[batchSize:]
+			if len(*pending) == 0 {
+				*pending = nil
+			}
+		}
 		if err != nil {
 			return err
 		}
-		*pending = (*pending)[batchSize:]
 	}
 	return nil
 }
@@ -325,10 +362,17 @@ func writePendingPingRecords(ctx context.Context, pending *[]models.PingRecord) 
 		writeCtx, cancel := context.WithTimeout(ctx, reportBatchWriteTimeout)
 		err := writePingRecords(writeCtx, (*pending)[:batchSize])
 		cancel()
+		var accepted *metric.WriteAcceptedError
+		if err == nil || errors.As(err, &accepted) {
+			clear((*pending)[:batchSize])
+			*pending = (*pending)[batchSize:]
+			if len(*pending) == 0 {
+				*pending = nil
+			}
+		}
 		if err != nil {
 			return err
 		}
-		*pending = (*pending)[batchSize:]
 	}
 	return nil
 }
@@ -341,6 +385,10 @@ func writeReportBatch(ctx context.Context, reports []v2.Report) ([]v2.Report, er
 		return nil, fmt.Errorf("wait for metric store operation before writing reports: %w", err)
 	}
 	defer storeOperations.ReleaseShared()
+	if err := reportWrites.Acquire(ctx, 1); err != nil {
+		return nil, err
+	}
+	defer reportWrites.Release(1)
 
 	s := GetStore()
 	if s == nil {
@@ -363,19 +411,20 @@ func writeReportBatch(ctx context.Context, reports []v2.Report) ([]v2.Report, er
 		if !values.initialized {
 			totalUp, hasUp, err := latestReportCounter(ctx, s, MetricNetTotalUp, report.UUID, report.UpdatedAt)
 			if err != nil {
-				logger.Errorf("metricstore", "failed to restore previous upload counter for %s: %v", report.UUID, err)
-			} else {
-				values.totalUp = totalUp
-				values.hasUp = hasUp
+				return nil, fmt.Errorf("restore previous upload counter for %s: %w", report.UUID, err)
 			}
 			totalDown, hasDown, err := latestReportCounter(ctx, s, MetricNetTotalDown, report.UUID, report.UpdatedAt)
 			if err != nil {
-				logger.Errorf("metricstore", "failed to restore previous download counter for %s: %v", report.UUID, err)
-			} else {
-				values.totalDown = totalDown
-				values.hasDown = hasDown
+				return nil, fmt.Errorf("restore previous download counter for %s: %w", report.UUID, err)
 			}
+			values.totalUp, values.hasUp = totalUp, hasUp
+			values.totalDown, values.hasDown = totalDown, hasDown
 			values.initialized = true
+			// Cache only the restored baseline, even if this attempt fails before
+			// acceptance. New report counters are committed below after ingestion.
+			state.mu.Lock()
+			state.reportTrafficValues = values
+			state.mu.Unlock()
 		}
 
 		if !values.timestamp.IsZero() && !report.UpdatedAt.After(values.timestamp) {
@@ -399,17 +448,18 @@ func writeReportBatch(ctx context.Context, reports []v2.Report) ([]v2.Report, er
 		prepared[i] = report
 	}
 
-	// Persist the restored per-report traffic state even if the write below
-	// fails, so a slow or failing database does not re-issue the previous-
-	// counter queries on every batch.
+	err := s.WriteBatch(ctx, points)
+	var accepted *metric.WriteAcceptedError
+	if err != nil && !errors.As(err, &accepted) {
+		return nil, err
+	}
+	// An accepted write must advance counters even when persistence failed:
+	// the Store retains those samples and retries flushing its own buckets.
 	for state, values := range pendingStates {
 		state.mu.Lock()
 		state.reportTrafficValues = values
 		state.mu.Unlock()
 	}
 
-	if err := s.WriteBatch(ctx, points); err != nil {
-		return nil, err
-	}
-	return prepared, nil
+	return prepared, err
 }

@@ -2,6 +2,20 @@ package metric
 
 import "errors"
 
+// WriteAcceptedError reports a persistence failure after WriteBatch has
+// accepted every point into its in-memory raw samples and rollups. Callers must
+// not replay the input: the store retains the unflushed rollups for Flush or
+// Close to retry, even after the raw sample window expires.
+type WriteAcceptedError struct {
+	Err error
+}
+
+func (e *WriteAcceptedError) Error() string {
+	return "metric: samples accepted, rollup flush failed: " + e.Err.Error()
+}
+
+func (e *WriteAcceptedError) Unwrap() error { return e.Err }
+
 var (
 	// ErrInvalidArgument reports an invalid caller-supplied argument.
 	//

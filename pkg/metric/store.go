@@ -862,9 +862,9 @@ func (s *Store) Write(ctx context.Context, point Point) error {
 	return s.WriteBatch(ctx, []Point{point})
 }
 
-// writeBatch writes one chunk of metric points through an executor.
-//
-// WriteBatch 批量写入采样点，并在大批量分块时保持整体事务性。
+// WriteBatch accepts samples into the raw window and minute rollups, then
+// persists closed buckets. A WriteAcceptedError means the samples were accepted
+// but flushing failed; retry Flush instead of replaying those samples.
 func (s *Store) WriteBatch(ctx context.Context, points []Point) error {
 	if err := s.ensureOpen(); err != nil {
 		return err
@@ -894,7 +894,10 @@ func (s *Store) WriteBatch(ctx context.Context, points []Point) error {
 	if err != nil {
 		return err
 	}
-	return s.writePreparedHotRollups(ctx, prepared, time.Now().UTC(), rebuild)
+	if err := s.writePreparedHotRollups(ctx, prepared, time.Now().UTC(), rebuild); err != nil {
+		return &WriteAcceptedError{Err: err}
+	}
+	return nil
 }
 
 // filterDisabledMetricPoints rejects points without a definition and drops
